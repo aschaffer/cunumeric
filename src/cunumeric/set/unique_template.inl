@@ -22,7 +22,6 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 template <VariantKind KIND, LegateTypeCode CODE, int32_t DIM>
@@ -44,12 +43,8 @@ struct UniqueImpl {
     size_t volume = pitches.flatten(rect);
 
     auto in = input.read_accessor<VAL, DIM>(rect);
-    size_t size;
-    Buffer<VAL> result;
-    std::tie(result, size) =
-      UniqueImplBody<KIND, CODE, DIM>()(in, pitches, rect, volume, comms, point, launch_domain);
-
-    output.return_data(result, Point<1>(size));
+    UniqueImplBody<KIND, CODE, DIM>()(
+      output, in, pitches, rect, volume, comms, point, launch_domain);
   }
 };
 

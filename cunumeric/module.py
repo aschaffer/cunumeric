@@ -23,7 +23,9 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Sequence, Union, cast
 
 import numpy as np
 import opt_einsum as oe  # type: ignore [import]
-from numpy.core.multiarray import normalize_axis_index  # type: ignore
+from numpy.core.multiarray import (  # type: ignore [attr-defined]
+    normalize_axis_index,
+)
 from numpy.core.numeric import (  # type: ignore [attr-defined]
     normalize_axis_tuple,
 )
@@ -54,6 +56,13 @@ _builtin_max = max
 _builtin_min = min
 _builtin_sum = sum
 
+casting_kinds: tuple[CastingKind, ...] = (
+    "no",
+    "equiv",
+    "safe",
+    "same_kind",
+    "unsafe",
+)
 
 #########################
 # Array creation routines
@@ -92,7 +101,11 @@ def empty(shape: NdShapeLike, dtype: npt.DTypeLike = np.float64) -> ndarray:
 
 
 @add_boilerplate("a")
-def empty_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
+def empty_like(
+    a: ndarray,
+    dtype: Optional[npt.DTypeLike] = None,
+    shape: Optional[NdShapeLike] = None,
+) -> ndarray:
     """
 
     empty_like(prototype, dtype=None)
@@ -106,6 +119,8 @@ def empty_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
         of the returned array.
     dtype : data-type, optional
         Overrides the data type of the result.
+    shape : int or tuple[int], optional
+        Overrides the shape of the result.
 
     Returns
     -------
@@ -121,7 +136,7 @@ def empty_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
     --------
     Multiple GPUs, Multiple CPUs
     """
-    shape = a.shape
+    shape = a.shape if shape is None else shape
     if dtype is not None:
         dtype = np.dtype(dtype)
     else:
@@ -236,7 +251,11 @@ def ones(shape: NdShapeLike, dtype: npt.DTypeLike = np.float64) -> ndarray:
     return full(shape, 1, dtype=dtype)
 
 
-def ones_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
+def ones_like(
+    a: ndarray,
+    dtype: Optional[npt.DTypeLike] = None,
+    shape: Optional[NdShapeLike] = None,
+) -> ndarray:
     """
 
     Return an array of ones with the same shape and type as a given array.
@@ -248,6 +267,8 @@ def ones_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
         returned array.
     dtype : data-type, optional
         Overrides the data type of the result.
+    shape : int or tuple[int], optional
+        Overrides the shape of the result.
 
     Returns
     -------
@@ -265,7 +286,7 @@ def ones_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
     usedtype = a.dtype
     if dtype is not None:
         usedtype = np.dtype(dtype)
-    return full_like(a, 1, dtype=usedtype)
+    return full_like(a, 1, dtype=usedtype, shape=shape)
 
 
 def zeros(shape: NdShapeLike, dtype: npt.DTypeLike = np.float64) -> ndarray:
@@ -299,7 +320,11 @@ def zeros(shape: NdShapeLike, dtype: npt.DTypeLike = np.float64) -> ndarray:
     return full(shape, 0, dtype=dtype)
 
 
-def zeros_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
+def zeros_like(
+    a: ndarray,
+    dtype: Optional[npt.DTypeLike] = None,
+    shape: Optional[NdShapeLike] = None,
+) -> ndarray:
     """
 
     Return an array of zeros with the same shape and type as a given array.
@@ -311,6 +336,8 @@ def zeros_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
         the returned array.
     dtype : data-type, optional
         Overrides the data type of the result.
+    shape : int or tuple[int], optional
+        Overrides the shape of the result.
 
     Returns
     -------
@@ -328,7 +355,7 @@ def zeros_like(a: ndarray, dtype: Optional[npt.DTypeLike] = None) -> ndarray:
     usedtype = a.dtype
     if dtype is not None:
         usedtype = np.dtype(dtype)
-    return full_like(a, 0, dtype=usedtype)
+    return full_like(a, 0, dtype=usedtype, shape=shape)
 
 
 def full(
@@ -374,7 +401,10 @@ def full(
 
 
 def full_like(
-    a: ndarray, value: Union[int, float], dtype: Optional[npt.DTypeLike] = None
+    a: ndarray,
+    value: Union[int, float],
+    dtype: Optional[npt.DTypeLike] = None,
+    shape: Optional[NdShapeLike] = None,
 ) -> ndarray:
     """
 
@@ -389,6 +419,8 @@ def full_like(
         Fill value.
     dtype : data-type, optional
         Overrides the data type of the result.
+    shape : int or tuple[int], optional
+        Overrides the shape of the result.
 
     Returns
     -------
@@ -407,7 +439,7 @@ def full_like(
         dtype = np.dtype(dtype)
     else:
         dtype = a.dtype
-    result = empty_like(a, dtype=dtype)
+    result = empty_like(a, dtype=dtype, shape=shape)
     val = np.array(value, dtype=result.dtype)
     result._thunk.fill(val)
     return result
@@ -708,7 +740,8 @@ def linspace(
         raise ValueError("Number of samples, %s, must be non-negative." % num)
     div = (num - 1) if endpoint else num
 
-    dt = np.result_type(start, stop, float(num))
+    common_kind = np.find_common_type((start.dtype, stop.dtype), ()).kind
+    dt = np.complex128 if common_kind == "c" else np.float64
     if dtype is None:
         dtype = dt
 
@@ -1438,10 +1471,33 @@ def check_list_depth(arr: Any, prefix: NdShape = (0,)) -> int:
     return depths[0] + 1
 
 
-def check_shape_dtype(
-    inputs: Sequence[ndarray],
+def check_shape_with_axis(
+    inputs: list[ndarray],
     func_name: str,
     axis: int,
+) -> None:
+    ndim = inputs[0].ndim
+    shape = inputs[0].shape
+
+    if ndim >= 1:
+        axis = normalize_axis_index(axis, ndim)
+        if _builtin_any(
+            shape[:axis] != inp.shape[:axis]
+            or shape[axis + 1 :] != inp.shape[axis + 1 :]
+            for inp in inputs
+        ):
+            raise ValueError(
+                f"All arguments to {func_name} "
+                "must have the same "
+                "dimension size in all dimensions "
+                "except the target axis"
+            )
+    return
+
+
+def check_shape_dtype_without_axis(
+    inputs: Sequence[ndarray],
+    func_name: str,
     dtype: Optional[npt.DTypeLike] = None,
     casting: CastingKind = "same_kind",
 ) -> tuple[list[ndarray], ArrayInfo]:
@@ -1456,17 +1512,6 @@ def check_shape_dtype(
         raise ValueError(
             f"All arguments to {func_name} "
             "must have the same number of dimensions"
-        )
-    if ndim > 1 and _builtin_any(
-        shape[1:axis] != inp.shape[1:axis]
-        and shape[axis + 1 :] != inp.shape[axis + 1 :]
-        for inp in inputs
-    ):
-        raise ValueError(
-            f"All arguments to {func_name} "
-            "must have the same "
-            "dimension size in all dimensions "
-            "except the target axis"
         )
 
     # Cast arrays with the passed arguments (dtype, casting)
@@ -1525,10 +1570,11 @@ def _block_collect_slices(
         arrays = list(convert_to_cunumeric_ndarray(inp) for inp in arr)
         common_shape = arrays[0].shape
         if len(arr) > 1:
-            arrays, common_info = check_shape_dtype(
-                arrays, block.__name__, axis=-1
+            arrays, common_info = check_shape_dtype_without_axis(
+                arrays, block.__name__
             )
             common_shape = common_info.shape
+            check_shape_with_axis(arrays, block.__name__, axis=-1)
         # the initial slices for each arr on arr.shape[-1]
         out_shape, slices, arrays = _collect_outshape_slices(
             arrays, common_shape, axis=-1 + len(common_shape)
@@ -1745,15 +1791,28 @@ def concatenate(
     --------
     Multiple GPUs, Multiple CPUs
     """
+    if dtype is not None and out is not None:
+        raise TypeError(
+            "concatenate() only takes `out` or `dtype` as an argument,"
+            "but both were provided."
+        )
+
+    if casting not in casting_kinds:
+        raise ValueError(
+            "casting must be one of 'no', 'equiv', "
+            "'safe', 'same_kind', or 'unsafe'"
+        )
+
     # flatten arrays if axis == None and concatenate arrays on the first axis
     if axis is None:
         inputs = list(inp.ravel() for inp in inputs)
         axis = 0
 
     # Check to see if we can build a new tuple of cuNumeric arrays
-    cunumeric_inputs, common_info = check_shape_dtype(
-        inputs, concatenate.__name__, axis, dtype, casting
+    cunumeric_inputs, common_info = check_shape_dtype_without_axis(
+        inputs, concatenate.__name__, dtype, casting
     )
+    check_shape_with_axis(cunumeric_inputs, concatenate.__name__, axis)
 
     return _concatenate(
         cunumeric_inputs,
@@ -1803,17 +1862,16 @@ def stack(
     Multiple GPUs, Multiple CPUs
     """
     if type(axis) is not int:
-        raise ValueError("The target axis should be an integer")
+        raise TypeError("The target axis should be an integer")
 
-    arrays, common_info = check_shape_dtype(arrays, stack.__name__, axis)
+    arrays, common_info = check_shape_dtype_without_axis(
+        arrays, stack.__name__
+    )
+    shapes = {inp.shape for inp in arrays}
+    if len(shapes) != 1:
+        raise ValueError("all input arrays must have the same shape for stack")
 
-    if axis > common_info.ndim:
-        raise ValueError(
-            "The target axis should be smaller or"
-            " equal to the number of dimensions"
-            " of input arrays"
-        )
-
+    axis = normalize_axis_index(axis, common_info.ndim + 1)
     shape = common_info.shape[:axis] + (1,) + common_info.shape[axis:]
     arrays = [arr.reshape(shape) for arr in arrays]
     common_info.shape = tuple(shape)
@@ -1857,7 +1915,10 @@ def vstack(tup: Sequence[ndarray]) -> ndarray:
     reshaped = _atleast_nd(2, tuple(tup))
     if not isinstance(reshaped, list):
         reshaped = [reshaped]
-    tup, common_info = check_shape_dtype(reshaped, vstack.__name__, 0)
+    tup, common_info = check_shape_dtype_without_axis(
+        reshaped, vstack.__name__
+    )
+    check_shape_with_axis(tup, vstack.__name__, 0)
     return _concatenate(
         tup,
         common_info,
@@ -1899,7 +1960,10 @@ def hstack(tup: Sequence[ndarray]) -> ndarray:
     --------
     Multiple GPUs, Multiple CPUs
     """
-    tup, common_info = check_shape_dtype(tup, hstack.__name__, 1)
+    tup, common_info = check_shape_dtype_without_axis(tup, hstack.__name__)
+    check_shape_with_axis(
+        tup, hstack.__name__, axis=(0 if common_info.ndim == 1 else 1)
+    )
     # When ndim == 1, hstack concatenates arrays along the first axis
     return _concatenate(
         tup,
@@ -1947,7 +2011,10 @@ def dstack(tup: Sequence[ndarray]) -> ndarray:
     reshaped = _atleast_nd(3, tuple(tup))
     if not isinstance(reshaped, list):
         reshaped = [reshaped]
-    tup, common_info = check_shape_dtype(reshaped, dstack.__name__, 2)
+    tup, common_info = check_shape_dtype_without_axis(
+        reshaped, dstack.__name__
+    )
+    check_shape_with_axis(tup, dstack.__name__, 2)
     return _concatenate(
         tup,
         common_info,
@@ -1985,11 +2052,14 @@ def column_stack(tup: Sequence[ndarray]) -> ndarray:
     --------
     Multiple GPUs, Multiple CPUs
     """
-    tup, common_info = check_shape_dtype(tup, column_stack.__name__, 1)
+    tup, common_info = check_shape_dtype_without_axis(
+        tup, column_stack.__name__
+    )
     # When ndim == 1, hstack concatenates arrays along the first axis
     if common_info.ndim == 1:
         tup = list(inp.reshape((inp.shape[0], 1)) for inp in tup)
         common_info.shape = tup[0].shape
+    check_shape_with_axis(tup, dstack.__name__, 1)
     return _concatenate(
         tup,
         common_info,
@@ -2327,17 +2397,46 @@ def repeat(a: ndarray, repeats: Any, axis: Optional[int] = None) -> ndarray:
     Multiple GPUs, Multiple CPUs
     """
 
+    if repeats is None:
+        raise TypeError(
+            "int() argument must be a string, a bytes-like object or a number,"
+            " not 'NoneType'"
+        )
+
+    if np.ndim(repeats) > 1:
+        raise ValueError("`repeats` should be scalar or 1D array")
+
+    # axes should be integer type
+    if axis is not None and not isinstance(axis, int):
+        raise TypeError("Axis should be of integer type")
+
     # when array is a scalar
     if np.ndim(a) == 0:
+        if axis is not None and axis != 0 and axis != -1:
+            raise np.AxisError(
+                f"axis {axis} is out of bounds for array of dimension 0"
+            )
         if np.ndim(repeats) == 0:
+            if not isinstance(repeats, int):
+                runtime.warn(
+                    "converting repeats to an integer type",
+                    category=UserWarning,
+                )
+            repeats = np.int64(repeats)
             return full((repeats,), cast(Union[int, float], a))
+        elif np.ndim(repeats) == 1 and len(repeats) == 1:
+            if not isinstance(repeats, int):
+                runtime.warn(
+                    "converting repeats to an integer type",
+                    category=UserWarning,
+                )
+            repeats = np.int64(repeats)
+            return full((repeats[0],), cast(Union[int, float], a))
         else:
             raise ValueError(
                 "`repeat` with a scalar parameter `a` is only "
                 "implemented for scalar values of the parameter `repeats`."
             )
-    if np.ndim(repeats) > 1:
-        raise ValueError("`repeats` should be scalar or 1D array")
 
     # array is an array
     array = convert_to_cunumeric_ndarray(a)
@@ -2349,13 +2448,7 @@ def repeat(a: ndarray, repeats: Any, axis: Optional[int] = None) -> ndarray:
         array = array.ravel()
         axis = 0
 
-    # axes should be integer type
-    if not isinstance(axis, int):
-        raise TypeError("Axis should be integer type")
-    axis_int = np.int32(axis)
-
-    if axis_int >= array.ndim:
-        raise ValueError("axis exceeds dimension of the input array")
+    axis_int: int = normalize_axis_index(axis, array.ndim)
 
     # If repeats is on a zero sized axis_int, then return the array.
     if array.shape[axis_int] == 0:
@@ -2370,7 +2463,7 @@ def repeat(a: ndarray, repeats: Any, axis: Optional[int] = None) -> ndarray:
         # repeats is 0
         if repeats == 0:
             empty_shape = list(array.shape)
-            empty_shape[axis] = 0
+            empty_shape[axis_int] = 0
             return ndarray(shape=tuple(empty_shape), dtype=array.dtype)
         # repeats should be integer type
         if not isinstance(repeats, int):
@@ -2380,22 +2473,17 @@ def repeat(a: ndarray, repeats: Any, axis: Optional[int] = None) -> ndarray:
             )
         result = array._thunk.repeat(
             repeats=np.int64(repeats),
-            axis=axis,
+            axis=axis_int,
             scalar_repeats=True,
         )
     # repeats is an array
     else:
         # repeats should be integer type
-        if repeats.dtype != np.int64:
-            runtime.warn(
-                "converting repeats to an integer type",
-                category=RuntimeWarning,
-            )
-        repeats = repeats.astype(np.int64)
-        if repeats.shape[0] != array.shape[axis]:
+        repeats = repeats._warn_and_convert(np.int64)
+        if repeats.shape[0] != array.shape[axis_int]:
             raise ValueError("incorrect shape of repeats array")
         result = array._thunk.repeat(
-            repeats=repeats._thunk, axis=axis, scalar_repeats=False
+            repeats=repeats._thunk, axis=axis_int, scalar_repeats=False
         )
     return ndarray(shape=result.shape, thunk=result)
 
@@ -3096,7 +3184,6 @@ def take(
 def _fill_fancy_index_for_along_axis_routines(
     a_shape: NdShape, axis: int, indices: ndarray
 ) -> tuple[ndarray, ...]:
-
     # the logic below is base on the cupy implementation of
     # the *_along_axis routines
     ndim = len(a_shape)
@@ -3192,7 +3279,7 @@ def put_along_axis(
 
     Parameters
     ----------
-    arr : ndarray (Ni..., M, Nk...)
+    a : ndarray (Ni..., M, Nk...)
         Destination array.
     indices : ndarray (Ni..., J, Nk...)
         Indices to change along each 1d slice of `arr`. This must match the
@@ -3220,6 +3307,10 @@ def put_along_axis(
     Multiple GPUs, Multiple CPUs
 
     """
+
+    if a.size == 0:
+        return
+
     if not np.issubdtype(indices.dtype, np.integer):
         raise TypeError("`indices` must be an integer array")
 
@@ -3230,6 +3321,10 @@ def put_along_axis(
         if a.ndim > 1:
             # TODO call a=a.flat when flat is implemented
             raise ValueError("a.ndim>1 case is not supported when axis=None")
+        if (indices.size == 0) or (values.size == 0):
+            return
+        if values.shape != indices.shape:
+            values = values._wrap(indices.size)
     else:
         computed_axis = normalize_axis_index(axis, a.ndim)
 
@@ -3447,6 +3542,88 @@ def diagonal(
     return a.diagonal(
         offset=offset, axis1=axis1, axis2=axis2, extract=extract, axes=axes
     )
+
+
+@add_boilerplate("a", "indices", "values")
+def put(
+    a: ndarray, indices: ndarray, values: ndarray, mode: str = "raise"
+) -> None:
+    """
+    Replaces specified elements of an array with given values.
+    The indexing works as if the target array is first flattened.
+
+    Parameters
+    ----------
+    a : array_like
+        Array to put data into
+    indices : array_like
+        Target indices, interpreted as integers.
+        WARNING: In case there are repeated entries in the
+        indices array, Legate doesn't guarantee the order in
+        which values are updated.
+
+    values : array_like
+        Values to place in `a` at target indices. If values array is shorter
+        than indices, it will be repeated as necessary.
+    mode : {'raise', 'wrap', 'clip'}, optional
+        Specifies how out-of-bounds indices will behave.
+        'raise' : raise an error.
+        'wrap' : wrap around.
+        'clip' : clip to the range.
+
+    See Also
+    --------
+    numpy.put
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+    """
+    a.put(indices=indices, values=values, mode=mode)
+
+
+@add_boilerplate("a", "mask", "values")
+def putmask(a: ndarray, mask: ndarray, values: ndarray) -> None:
+    """
+    putmask(a, mask, values)
+    Changes elements of an array based on conditional and input values.
+    Sets ``a.flat[n] = values[n]`` for each n where ``mask.flat[n]==True``.
+    If `values` is not the same size as `a` and `mask` then it will repeat.
+    This gives behavior different from ``a[mask] = values``.
+
+    Parameters
+    ----------
+    a : ndarray
+        Target array.
+    mask : array_like
+        Boolean mask array. It has to be the same shape as `a`.
+    values : array_like
+        Values to put into `a` where `mask` is True. If `values` is smaller
+        than `a` it will be repeated.
+
+    See Also
+    --------
+    numpy.putmask
+
+    Availability
+    ------------
+    Multiple GPUs, Multiple CPUs
+    """
+    if not a.shape == mask.shape:
+        raise ValueError("mask and data must be the same size")
+
+    mask = mask._warn_and_convert(np.dtype(bool))
+
+    if a.dtype != values.dtype:
+        values = values._warn_and_convert(a.dtype)
+
+    try:
+        np.broadcast_shapes(values.shape, a.shape)
+    except ValueError:
+        values = values._wrap(a.size)
+        values = values.reshape(a.shape)
+
+    a._thunk.putmask(mask._thunk, values._thunk)
 
 
 @add_boilerplate("a", "val")
@@ -3903,9 +4080,13 @@ def tensordot(
 
 
 # Trivial multi-tensor contraction strategy: contract in input order
-class NullOptimizer(oe.paths.PathOptimizer):  # type: ignore
-    def __call__(  # type: ignore [no-untyped-def]
-        self, inputs, output, size_dict, memory_limit=None
+class NullOptimizer(oe.paths.PathOptimizer):  # type: ignore [misc,no-any-unimported] # noqa
+    def __call__(
+        self,
+        inputs: list[set[str]],
+        outputs: set[str],
+        size_dict: dict[str, int],
+        memory_limit: Union[int, None] = None,
     ) -> list[tuple[int, int]]:
         return [(0, 1)] + [(0, -1)] * (len(inputs) - 2)
 
@@ -3956,7 +4137,8 @@ def _contract(
         raise ValueError("Unknown mode labels on output")
 
     # Handle types
-    if dtype is not None:
+    makes_view = b is None and len(a_modes) == len(out_modes)
+    if dtype is not None and not makes_view:
         c_dtype = dtype
     elif out is not None:
         c_dtype = out.dtype
@@ -3971,14 +4153,14 @@ def _contract(
 
     # Handle duplicate modes on inputs
     c_a_modes = Counter(a_modes)
-    for (mode, count) in c_a_modes.items():
+    for mode, count in c_a_modes.items():
         if count > 1:
             axes = [i for (i, m) in enumerate(a_modes) if m == mode]
             a = a._diag_helper(axes=axes)
             # diagonal is stored on last axis
             a_modes = [m for m in a_modes if m != mode] + [mode]
     c_b_modes = Counter(b_modes)
-    for (mode, count) in c_b_modes.items():
+    for mode, count in c_b_modes.items():
         if count > 1:
             axes = [i for (i, m) in enumerate(b_modes) if m == mode]
             b = b._diag_helper(axes=axes)  # type: ignore [union-attr]
@@ -4000,12 +4182,12 @@ def _contract(
     # Sum-out modes appearing on one argument, and missing from the result
     # TODO: If we supported sum on multiple axes we could do the full sum in a
     # single operation, and avoid intermediates.
-    for (dim, mode) in reversed(list(enumerate(a_modes))):
+    for dim, mode in reversed(list(enumerate(a_modes))):
         if mode not in b_modes and mode not in out_modes:
             a_modes.pop(dim)
             a = a.sum(axis=dim)
 
-    for (dim, mode) in reversed(list(enumerate(b_modes))):
+    for dim, mode in reversed(list(enumerate(b_modes))):
         if mode not in a_modes and mode not in out_modes:
             b_modes.pop(dim)
             b = b.sum(axis=dim)  # type: ignore [union-attr]
@@ -4013,7 +4195,7 @@ def _contract(
     # Compute extent per mode. No need to consider broadcasting at this stage,
     # since it has been handled above.
     mode2extent: dict[str, int] = {}
-    for (mode, extent) in chain(
+    for mode, extent in chain(
         zip(a_modes, a.shape), zip(b_modes, b.shape) if b is not None else []
     ):
         prev_extent = mode2extent.get(mode)
@@ -4034,7 +4216,7 @@ def _contract(
     c_modes = []
     c_shape: NdShape = ()
     c_bloated_shape: NdShape = ()
-    for (mode, extent) in zip(out_modes, out_shape):
+    for mode, extent in zip(out_modes, out_shape):
         if mode not in a_modes and mode not in b_modes:
             c_bloated_shape += (1,)
         else:
@@ -4046,7 +4228,7 @@ def _contract(
     # Verify output array has the right shape (input arrays can be broadcasted
     # up to match the output, but not the other way around). There should be no
     # unknown or singleton modes on the result at this point.
-    for (mode, extent) in zip(c_modes, c_shape):
+    for mode, extent in zip(c_modes, c_shape):
         prev_extent = mode2extent[mode]
         assert prev_extent != 1
         if extent != prev_extent:
@@ -4215,7 +4397,7 @@ def einsum(
     computed_operands, contractions = oe.contract_path(
         expr, *operands_list, einsum_call=True, optimize=optimize
     )
-    for (indices, _, sub_expr, _, _) in contractions:
+    for indices, _, sub_expr, _, _ in contractions:
         assert len(indices) == 1 or len(indices) == 2
         a = computed_operands.pop(indices[0])
         b = computed_operands.pop(indices[1]) if len(indices) == 2 else None
@@ -5758,8 +5940,12 @@ def sort_complex(a: ndarray) -> ndarray:
     # force complex result upon return
     if np.issubdtype(result.dtype, np.complexfloating):
         return result
-    else:
+    elif (
+        np.issubdtype(result.dtype, np.integer) and result.dtype.itemsize <= 2
+    ):
         return result.astype(np.complex64, copy=True)
+    else:
+        return result.astype(np.complex128, copy=True)
 
 
 # partition
@@ -6132,6 +6318,8 @@ def bincount(
     --------
     Multiple GPUs, Multiple CPUs
     """
+    if x.ndim != 1:
+        raise ValueError("the input array must be 1-dimensional")
     if weights is not None:
         if weights.shape != x.shape:
             raise ValueError("weights array must be same shape for bincount")
@@ -6139,11 +6327,16 @@ def bincount(
             raise ValueError("weights must be convertible to float64")
         # Make sure the weights are float64
         weights = weights.astype(np.float64)
-    if x.dtype.kind != "i" and x.dtype.kind != "u":
+    if x.dtype.kind != "i":
         raise TypeError("input array for bincount must be integer type")
     if minlength < 0:
         raise ValueError("'minlength' must not be negative")
-    minlength = _builtin_max(minlength, int(amax(x)) + 1)
+    # Note that the following are non-blocking operations,
+    # though passing their results to `int` is blocking
+    max_val, min_val = amax(x), amin(x)
+    if int(min_val) < 0:
+        raise ValueError("the input array must have no negative elements")
+    minlength = _builtin_max(minlength, int(max_val) + 1)
     if x.size == 1:
         # Handle the special case of 0-D array
         if weights is None:

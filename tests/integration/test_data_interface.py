@@ -13,9 +13,13 @@
 # limitations under the License.
 #
 
+import numpy as np
 import pytest
 
 import cunumeric as num
+from cunumeric.utils import SUPPORTED_DTYPES
+
+DTYPES = SUPPORTED_DTYPES.keys()
 
 
 # A simple wrapper with a legate data interface implementation for testing
@@ -28,8 +32,9 @@ class Wrapper:
         return self.wrapped
 
 
-def test_roundtrip():
-    arr1 = num.array([1, 2, 3, 4], dtype=num.float64)
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_roundtrip(dtype):
+    arr1 = num.array([1, 2, 3, 4], dtype=dtype)
     data = Wrapper(arr1.__legate_data_interface__)
     arr2 = num.asarray(data)
     assert num.array_equal(arr1, arr2)
@@ -38,4 +43,5 @@ def test_roundtrip():
 if __name__ == "__main__":
     import sys
 
+    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))

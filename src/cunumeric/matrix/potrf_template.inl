@@ -21,27 +21,21 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 template <VariantKind KIND, LegateTypeCode CODE>
 struct PotrfImplBody;
 
 template <LegateTypeCode CODE>
-struct support_potrf : std::false_type {
-};
+struct support_potrf : std::false_type {};
 template <>
-struct support_potrf<LegateTypeCode::DOUBLE_LT> : std::true_type {
-};
+struct support_potrf<LegateTypeCode::DOUBLE_LT> : std::true_type {};
 template <>
-struct support_potrf<LegateTypeCode::FLOAT_LT> : std::true_type {
-};
+struct support_potrf<LegateTypeCode::FLOAT_LT> : std::true_type {};
 template <>
-struct support_potrf<LegateTypeCode::COMPLEX64_LT> : std::true_type {
-};
+struct support_potrf<LegateTypeCode::COMPLEX64_LT> : std::true_type {};
 template <>
-struct support_potrf<LegateTypeCode::COMPLEX128_LT> : std::true_type {
-};
+struct support_potrf<LegateTypeCode::COMPLEX128_LT> : std::true_type {};
 
 template <VariantKind KIND>
 struct PotrfImpl {

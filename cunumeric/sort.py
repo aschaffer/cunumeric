@@ -17,7 +17,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Union, cast
 
 from legate.core import types as ty
-from numpy.core.multiarray import normalize_axis_index  # type: ignore
+from numpy.core.multiarray import (  # type: ignore [attr-defined]
+    normalize_axis_index,
+)
 
 from .config import CuNumericOpCode
 
@@ -82,7 +84,7 @@ def sort_swapped(
 def sort_task(
     output: DeferredArray, input: DeferredArray, argsort: bool, stable: bool
 ) -> None:
-    task = output.context.create_task(CuNumericOpCode.SORT)
+    task = output.context.create_auto_task(CuNumericOpCode.SORT)
 
     uses_unbound_output = output.runtime.num_procs > 1 and input.ndim == 1
 

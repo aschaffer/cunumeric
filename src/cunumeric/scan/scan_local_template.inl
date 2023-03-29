@@ -19,7 +19,6 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 template <VariantKind KIND, ScanCode OP_CODE, LegateTypeCode CODE, int DIM>
@@ -33,9 +32,8 @@ struct ScanLocalImpl {
   // Case where NANs are transformed
   template <LegateTypeCode CODE,
             int DIM,
-            std::enable_if_t<NAN_TO_IDENTITY &&
-                             (legate::is_floating_point<CODE>::value ||
-                              legate::is_complex<legate::legate_type_of<CODE>>::value)>* = nullptr>
+            std::enable_if_t<NAN_TO_IDENTITY && (legate::is_floating_point<CODE>::value ||
+                                                 legate::is_complex<CODE>::value)>* = nullptr>
   void operator()(ScanLocalArgs& args) const
   {
     using OP  = ScanOp<OP_CODE, CODE>;
@@ -47,7 +45,7 @@ struct ScanLocalImpl {
     size_t volume = pitches.flatten(rect);
 
     if (volume == 0) {
-      args.sum_vals.make_empty();
+      args.sum_vals.bind_empty_data();
       return;
     }
 
@@ -58,12 +56,10 @@ struct ScanLocalImpl {
     ScanLocalNanImplBody<KIND, OP_CODE, CODE, DIM>()(func, out, in, args.sum_vals, pitches, rect);
   }
   // Case where NANs are as is
-  template <
-    LegateTypeCode CODE,
-    int DIM,
-    std::enable_if_t<!(NAN_TO_IDENTITY &&
-                       (legate::is_floating_point<CODE>::value ||
-                        legate::is_complex<legate::legate_type_of<CODE>>::value))>* = nullptr>
+  template <LegateTypeCode CODE,
+            int DIM,
+            std::enable_if_t<!(NAN_TO_IDENTITY && (legate::is_floating_point<CODE>::value ||
+                                                   legate::is_complex<CODE>::value))>* = nullptr>
   void operator()(ScanLocalArgs& args) const
   {
     using OP  = ScanOp<OP_CODE, CODE>;
@@ -75,7 +71,7 @@ struct ScanLocalImpl {
     size_t volume = pitches.flatten(rect);
 
     if (volume == 0) {
-      args.sum_vals.make_empty();
+      args.sum_vals.bind_empty_data();
       return;
     }
 

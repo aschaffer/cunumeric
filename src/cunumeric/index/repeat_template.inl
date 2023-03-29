@@ -22,7 +22,6 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 template <VariantKind KIND, LegateTypeCode CODE, int DIM>
@@ -38,9 +37,7 @@ struct RepeatImpl {
     auto input_arr  = args.input.read_accessor<VAL, DIM>(input_rect);
 
     if (input_rect.empty()) {
-      auto extents = Point<DIM>::ZEROES();
-      auto buffer  = create_buffer<VAL, DIM>(extents);
-      args.output.return_data(buffer, extents);
+      args.output.bind_empty_data();
       return;
     }
 

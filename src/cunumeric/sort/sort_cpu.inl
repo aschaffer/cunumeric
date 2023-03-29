@@ -34,7 +34,6 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 // sorts inptr in-place, if argptr not nullptr it returns sort indices
@@ -464,7 +463,7 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
   using VAL = legate_type_of<CODE>;
 
   size_t volume              = local_sorted.size;
-  bool is_unbound_1d_storage = output_array_unbound.is_output_store();
+  bool is_unbound_1d_storage = output_array_unbound.is_unbound_store();
 
   assert((volume > 0 && segment_size_l > 0) || volume == segment_size_l);
 
@@ -482,8 +481,9 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
     comm::coll::collAllgather(
       worker_counts.ptr(my_rank), worker_counts.ptr(0), 1, comm::coll::CollDataType::CollInt, comm);
 
+    auto p_worker_count = worker_counts.ptr(0);
     int32_t worker_count =
-      std::accumulate(worker_counts.ptr(0), worker_counts.ptr(num_ranks), 0, std::plus<int32_t>());
+      std::accumulate(p_worker_count, p_worker_count + num_ranks, 0, std::plus<int32_t>());
 
     if (worker_count < num_ranks) {
       const size_t number_sort_groups = num_ranks / num_sort_ranks;
@@ -565,7 +565,8 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
       for (size_t sort_rank = 0; sort_rank < num_sort_ranks; ++sort_rank) {
         comm_size[sort_ranks[sort_rank]] = num_samples_l * sizeof(SegmentSample<VAL>);
       }
-      thrust::exclusive_scan(exec, comm_size.ptr(0), comm_size.ptr(num_ranks), rdispls.ptr(0), 0);
+      auto p_comm_size = comm_size.ptr(0);
+      thrust::exclusive_scan(exec, p_comm_size, p_comm_size + num_ranks, rdispls.ptr(0), 0);
 
       comm::coll::collAlltoallv(samples_l.ptr(0),
                                 comm_size.ptr(0),  // num_samples_l*size for all in sort group
@@ -612,8 +613,9 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
   auto segment_blocks = create_buffer<int32_t>(num_sort_ranks * num_segments_l);
 
   // initialize sizes to send [r][segment]
-  auto size_send = create_buffer<int32_t>(num_sort_ranks * (num_segments_l + 1));
-  std::fill(size_send.ptr(0), size_send.ptr(num_sort_ranks * (num_segments_l + 1)), 0);
+  auto size_send   = create_buffer<int32_t>(num_sort_ranks * (num_segments_l + 1));
+  auto p_size_send = size_send.ptr(0);
+  std::fill(p_size_send, p_size_send + num_sort_ranks * (num_segments_l + 1), 0);
 
   {
     for (int32_t segment = 0; segment < num_segments_l; ++segment) {
@@ -685,7 +687,8 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
     for (size_t sort_rank = 0; sort_rank < num_sort_ranks; ++sort_rank) {
       comm_size[sort_ranks[sort_rank]] = num_segments_l + 1;
     }
-    thrust::exclusive_scan(exec, comm_size.ptr(0), comm_size.ptr(num_ranks), displs.ptr(0), 0);
+    auto p_comm_size = comm_size.ptr(0);
+    thrust::exclusive_scan(exec, p_comm_size, p_comm_size + num_ranks, displs.ptr(0), 0);
 
     comm::coll::collAlltoallv(
       size_send.ptr(0),
@@ -781,10 +784,12 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
       recv_size_total[sort_ranks[sort_rank]] =
         sizeof(VAL) * size_recv[sort_rank * (num_segments_l + 1) + num_segments_l];
     }
+    auto p_send_size_total = send_size_total.ptr(0);
+    auto p_recv_size_total = recv_size_total.ptr(0);
     thrust::exclusive_scan(
-      exec, send_size_total.ptr(0), send_size_total.ptr(num_ranks), sdispls.ptr(0), 0);
+      exec, p_send_size_total, p_send_size_total + num_ranks, sdispls.ptr(0), 0);
     thrust::exclusive_scan(
-      exec, recv_size_total.ptr(0), recv_size_total.ptr(num_ranks), rdispls.ptr(0), 0);
+      exec, p_recv_size_total, p_recv_size_total + num_ranks, rdispls.ptr(0), 0);
 
     comm::coll::collAlltoallv(val_send_buffer.ptr(0),
                               send_size_total.ptr(0),
@@ -804,9 +809,9 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
       }
 
       thrust::exclusive_scan(
-        exec, send_size_total.ptr(0), send_size_total.ptr(num_ranks), sdispls.ptr(0), 0);
+        exec, p_send_size_total, p_send_size_total + num_ranks, sdispls.ptr(0), 0);
       thrust::exclusive_scan(
-        exec, recv_size_total.ptr(0), recv_size_total.ptr(num_ranks), rdispls.ptr(0), 0);
+        exec, p_recv_size_total, p_recv_size_total + num_ranks, rdispls.ptr(0), 0);
       comm::coll::collAlltoallv(idc_send_buffer.ptr(0),
                                 send_size_total.ptr(0),
                                 sdispls.ptr(0),
@@ -882,9 +887,9 @@ void sample_sort_nd(SortPiece<legate_type_of<CODE>> local_sorted,
     merge_buffer.segments.destroy();
     if (argsort) {
       merge_buffer.values.destroy();
-      output_array_unbound.return_data(merge_buffer.indices, Point<1>(merge_buffer.size));
+      output_array_unbound.bind_data(merge_buffer.indices, Point<1>(merge_buffer.size));
     } else {
-      output_array_unbound.return_data(merge_buffer.values, Point<1>(merge_buffer.size));
+      output_array_unbound.bind_data(merge_buffer.values, Point<1>(merge_buffer.size));
     }
   }
 }
@@ -915,7 +920,7 @@ struct SortImplBodyCpu {
     // we allow empty domains for distributed sorting
     assert(rect.empty() || input.accessor.is_dense_row_major(rect));
 
-    bool is_unbound_1d_storage = output_array.is_output_store();
+    bool is_unbound_1d_storage = output_array.is_unbound_store();
     bool need_distributed_sort = segment_size_l != segment_size_g || is_unbound_1d_storage;
     bool rebalance             = !is_unbound_1d_storage;
     assert(DIM == 1 || !is_unbound_1d_storage);
@@ -1016,9 +1021,9 @@ struct SortImplBodyCpu {
         // edge case where we have an unbound store but only 1 CPU was assigned with the task
         if (argsort) {
           local_sorted.values.destroy();
-          output_array.return_data(local_sorted.indices, Point<1>(local_sorted.size));
+          output_array.bind_data(local_sorted.indices, Point<1>(local_sorted.size));
         } else {
-          output_array.return_data(local_sorted.values, Point<1>(local_sorted.size));
+          output_array.bind_data(local_sorted.values, Point<1>(local_sorted.size));
         }
       }
     } else if (argsort) {

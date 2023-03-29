@@ -22,7 +22,6 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 template <VariantKind KIND, LegateTypeCode CODE, int DIM>
@@ -41,10 +40,7 @@ struct ArgWhereImpl {
     size_t volume = pitches.flatten(rect_in);
 
     if (volume == 0) {
-      auto extents = Point<2>::ZEROES();
-      // auto extents = Point<2>(0,DIM);
-      auto buffer = create_buffer<VAL, 2>(extents);
-      args.out.return_data(buffer, extents);
+      args.out.bind_empty_data();
       return;
     }
 

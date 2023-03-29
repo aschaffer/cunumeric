@@ -19,18 +19,17 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 template <LegateTypeCode CODE, int32_t DIM>
 struct NonzeroImplBody<VariantKind::CPU, CODE, DIM> {
   using VAL = legate_type_of<CODE>;
 
-  size_t operator()(const AccessorRO<VAL, DIM>& in,
-                    const Pitches<DIM - 1>& pitches,
-                    const Rect<DIM>& rect,
-                    const size_t volume,
-                    std::vector<Buffer<int64_t>>& results)
+  void operator()(std::vector<Array>& outputs,
+                  const AccessorRO<VAL, DIM>& in,
+                  const Pitches<DIM - 1>& pitches,
+                  const Rect<DIM>& rect,
+                  const size_t volume)
   {
     int64_t size = 0;
 
@@ -39,7 +38,9 @@ struct NonzeroImplBody<VariantKind::CPU, CODE, DIM> {
       size += in[point] != VAL(0);
     }
 
-    for (auto& result : results) result = create_buffer<int64_t>(size, Memory::Kind::SYSTEM_MEM);
+    std::vector<Buffer<int64_t>> results;
+    for (auto& output : outputs)
+      results.push_back(output.create_output_buffer<int64_t, 1>(Point<1>(size), true));
 
     int64_t out_idx = 0;
     for (size_t idx = 0; idx < volume; ++idx) {
@@ -49,8 +50,6 @@ struct NonzeroImplBody<VariantKind::CPU, CODE, DIM> {
       ++out_idx;
     }
     assert(size == out_idx);
-
-    return size;
   }
 };
 

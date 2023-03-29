@@ -22,7 +22,6 @@
 
 namespace cunumeric {
 
-using namespace Legion;
 using namespace legate;
 
 template <VariantKind KIND, LegateTypeCode CODE>
@@ -43,11 +42,7 @@ struct UniqueReduceImpl {
       inputs.push_back(std::make_pair(acc, shape));
     }
 
-    size_t size;
-    Buffer<VAL> result;
-    std::tie(result, size) = UniqueReduceImplBody<KIND, CODE>()(inputs);
-
-    output.return_data(result, Point<1>(size));
+    UniqueReduceImplBody<KIND, CODE>()(output, inputs);
   }
 };
 

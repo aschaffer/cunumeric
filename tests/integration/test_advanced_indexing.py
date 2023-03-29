@@ -230,7 +230,6 @@ def test_future_stores():
 
 
 def test():
-
     # tests on 1D input array:
     print("advanced indexing test 1")
 
@@ -756,6 +755,20 @@ def test():
     res_num = x_num[[1, 1], :, [False, True, False, True]]
     assert np.array_equal(res, res_num)
 
+    # set item with mixed indices
+    x[1, :, [False, True, False, True]] = 129
+    x_num[1, :, [False, True, False, True]] = 129
+    assert np.array_equal(x, x_num)
+
+    # set item with mixed indices
+    x[:, [False, True, False], 1] = 111
+    x_num[:, [False, True, False], 1] = 111
+    assert np.array_equal(x, x_num)
+
+    x[..., [False, True, False, True, False]] = 200
+    x_num[..., [False, True, False, True, False]] = 200
+    assert np.array_equal(x, x_num)
+
     # b: combining basic and advanced indexing schemes
     ind0 = np.array([1, 1])
     ind0_num = num.array(ind0)
@@ -958,4 +971,5 @@ def test():
 if __name__ == "__main__":
     import sys
 
+    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))

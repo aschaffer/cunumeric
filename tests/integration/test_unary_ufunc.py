@@ -14,6 +14,7 @@
 #
 
 import argparse
+from zlib import adler32
 
 import numpy as np
 import pytest
@@ -27,8 +28,7 @@ def deterministic_op_test(func):
     # This enforces that inputs are always the same whether
     # running all tests or a single test with -k.
     def wrapper_set_seed(op, *args, **kwargs):
-        # np seeds must be limited to 32-bits
-        np.random.seed(hash(op) & 0xFFFFFFFF)
+        np.random.seed(adler32(bytes(op, "utf-8")))
         func(op, *args, **kwargs)
         func(op, *args, **kwargs)
 
@@ -215,7 +215,7 @@ def test_log_ops(op):
     check_op_input(op, astype="F", out_dtype="D")
 
     check_op_input(op, randint=True, a_min=3, a_max=10)
-    check_op_input(op, shape=(1,), offset=3)
+    check_op_input(op, shape=(1,), a_min=0.1, offset=3)
 
 
 even_root_ops = ("sqrt",)
@@ -231,7 +231,7 @@ def test_even_root_ops(op):
     # Complex inputs can be negative
     check_op_input(op, astype="F", out_dtype="D")
     check_op_input(op, randint=True, a_min=3, a_max=10)
-    check_op_input(op, shape=(1,), offset=3)
+    check_op_input(op, shape=(1,), a_min=0.1, offset=3)
 
 
 odd_root_ops = ("cbrt",)
@@ -382,4 +382,5 @@ if __name__ == "__main__":
         in_np = parse_inputs(args.inputs, args.dtypes)
         check_ops([args.op], in_np)
     else:
+        np.random.seed(12345)
         sys.exit(pytest.main(sys.argv))
