@@ -601,7 +601,7 @@ class NumPyThunk(ABC):
         rhs: Any,
         kth: Union[int, Sequence[int]],
         argpartition: bool = False,
-        axis: int = -1,
+        axis: Union[int, None] = -1,
         kind: SelectKind = "introselect",
         order: Union[None, str, list[str]] = None,
     ) -> None:
@@ -628,7 +628,7 @@ class NumPyThunk(ABC):
         self,
         rhs: Any,
         argsort: bool = False,
-        axis: int = -1,
+        axis: Union[int, None] = -1,
         kind: SortType = "quicksort",
         order: Union[None, str, list[str]] = None,
     ) -> None:
@@ -683,6 +683,10 @@ class NumPyThunk(ABC):
         ...
 
     @abstractmethod
+    def broadcast_to(self, shape: NdShape) -> NumPyThunk:
+        ...
+
+    @abstractmethod
     def argwhere(self) -> NumPyThunk:
         ...
 
@@ -731,4 +735,8 @@ class NumPyThunk(ABC):
 
     @abstractmethod
     def _wrap(self, src: Any, new_len: int) -> None:
+        ...
+
+    @abstractmethod
+    def histogram(self, src: Any, bins: Any, weights: Any) -> None:
         ...

@@ -19,7 +19,17 @@ import operator
 import re
 from collections import Counter
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Literal, Optional, Sequence, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Iterable,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 import opt_einsum as oe  # type: ignore [import]
@@ -33,11 +43,18 @@ from numpy.core.numeric import (  # type: ignore [attr-defined]
 from cunumeric.coverage import is_implemented
 
 from ._ufunc.comparison import maximum, minimum
-from ._ufunc.floating import floor
+from ._ufunc.floating import floor, isnan
 from ._ufunc.math import add, multiply
-from .array import add_boilerplate, convert_to_cunumeric_ndarray, ndarray
+from ._unary_red_utils import get_non_nan_unary_red_code
+from .array import (
+    add_boilerplate,
+    check_writeable,
+    convert_to_cunumeric_ndarray,
+    ndarray,
+)
 from .config import BinaryOpCode, ScanCode, UnaryRedCode
 from .runtime import runtime
+from .settings import settings as cunumeric_settings
 from .types import NdShape, NdShapeLike, OrderType, SortSide
 from .utils import AxesPairLike, inner_modes, matmul_modes, tensordot_modes
 
@@ -55,6 +72,7 @@ _builtin_any = any
 _builtin_max = max
 _builtin_min = min
 _builtin_sum = sum
+_builtin_range = range
 
 casting_kinds: tuple[CastingKind, ...] = (
     "no",
@@ -525,7 +543,7 @@ def array(
     elif copy and obj is result:
         result = result.copy()
     if result.ndim < ndmin:
-        shape = (np.newaxis,) * (ndmin - result.ndim) + result.shape
+        shape = (1,) * (ndmin - result.ndim) + result.shape
         result = result.reshape(shape)
     return result
 
@@ -560,7 +578,8 @@ def asarray(a: Any, dtype: Optional[np.dtype[Any]] = None) -> ndarray:
     """
     if not isinstance(a, ndarray):
         thunk = runtime.get_numpy_thunk(a, share=True, dtype=dtype)
-        array = ndarray(shape=None, thunk=thunk)
+        writeable = a.flags.writeable if isinstance(a, np.ndarray) else True
+        array = ndarray(shape=None, thunk=thunk, writeable=writeable)
     else:
         array = a
     if dtype is not None and array.dtype != dtype:
@@ -663,12 +682,12 @@ def arange(
         step = 1
 
     if dtype is None:
-        dtype = np.array([stop]).dtype
+        dtype = np.result_type(start, stop, step)
     else:
         dtype = np.dtype(dtype)
 
     N = math.ceil((stop - start) / step)
-    result = ndarray((N,), dtype)
+    result = ndarray((_builtin_max(0, N),), dtype)
     result._thunk.arange(start, stop, step)
     return result
 
@@ -740,7 +759,7 @@ def linspace(
         raise ValueError("Number of samples, %s, must be non-negative." % num)
     div = (num - 1) if endpoint else num
 
-    common_kind = np.find_common_type((start.dtype, stop.dtype), ()).kind
+    common_kind = np.result_type(start.dtype, stop.dtype).kind
     dt = np.complex128 if common_kind == "c" else np.float64
     if dtype is None:
         dtype = dt
@@ -1286,13 +1305,14 @@ def _reshape_recur(ndim: int, arr: ndarray) -> tuple[int, ...]:
 
 
 def _atleast_nd(
-    ndim: int, arys: tuple[ndarray, ...]
+    ndim: int, arys: Sequence[ndarray]
 ) -> Union[list[ndarray], ndarray]:
     inputs = list(convert_to_cunumeric_ndarray(arr) for arr in arys)
     # 'reshape' change the shape of arrays
     # only when arr.shape != _reshape_recur(ndim,arr)
     result = list(arr.reshape(_reshape_recur(ndim, arr)) for arr in inputs)
-    # if the number of arrys in `arys` is 1, the return value is a single array
+    # if the number of arrays in `arys` is 1,
+    # the return value is a single array
     if len(result) == 1:
         return result[0]
     return result
@@ -1428,6 +1448,214 @@ def squeeze(a: ndarray, axis: Optional[NdShapeLike] = None) -> ndarray:
     return a.squeeze(axis=axis)
 
 
+def broadcast_shapes(
+    *args: Union[NdShapeLike, Sequence[NdShapeLike]]
+) -> NdShape:
+    """
+
+    Broadcast the input shapes into a single shape.
+
+    Parameters
+    ----------
+    `*args` : tuples of ints, or ints
+        The shapes to be broadcast against each other.
+
+    Returns
+    -------
+    tuple : Broadcasted shape.
+
+    See Also
+    --------
+    numpy.broadcast_shapes
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+
+    """
+    # TODO: expected "Union[SupportsIndex, Sequence[SupportsIndex]]"
+    return np.broadcast_shapes(*args)  # type: ignore [arg-type]
+
+
+def _broadcast_to(
+    arr: ndarray,
+    shape: NdShapeLike,
+    subok: bool = False,
+    broadcasted: bool = False,
+) -> ndarray:
+    # create an array object w/ options passed from 'broadcast' routines
+    arr = array(arr, copy=False, subok=subok)
+    # 'broadcast_to' returns a read-only view of the original array
+    out_shape = broadcast_shapes(arr.shape, shape)
+    result = ndarray(
+        shape=out_shape,
+        thunk=arr._thunk.broadcast_to(out_shape),
+        writeable=False,
+    )
+    return result
+
+
+@add_boilerplate("arr")
+def broadcast_to(
+    arr: ndarray, shape: NdShapeLike, subok: bool = False
+) -> ndarray:
+    """
+
+    Broadcast an array to a new shape.
+
+    Parameters
+    ----------
+    arr : array_like
+        The array to broadcast.
+    shape : tuple or int
+        The shape of the desired array.
+        A single integer i is interpreted as (i,).
+    subok : bool, optional
+        This option is ignored by cuNumeric.
+
+    Returns
+    -------
+    broadcast : array
+        A readonly view on the original array with the given shape.
+        It is typically not contiguous.
+        Furthermore, more than one element of a broadcasted array
+        may refer to a single memory location.
+
+    See Also
+    --------
+    numpy.broadcast_to
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+
+    """
+    return _broadcast_to(arr, shape, subok)
+
+
+def _broadcast_arrays(
+    arrs: list[ndarray],
+    subok: bool = False,
+) -> list[ndarray]:
+    # create an arry object w/ options passed from 'broadcast' routines
+    arrays = [array(arr, copy=False, subok=subok) for arr in arrs]
+    # check if the broadcast can happen in the input list of arrays
+    shapes = [arr.shape for arr in arrays]
+    out_shape = broadcast_shapes(*shapes)
+    # broadcast to the final shape
+    arrays = [_broadcast_to(arr, out_shape, subok) for arr in arrays]
+    return arrays
+
+
+def broadcast_arrays(
+    *args: Sequence[Any], subok: bool = False
+) -> list[ndarray]:
+    """
+
+    Broadcast any number of arrays against each other.
+
+    Parameters
+    ----------
+    `*args` : array_likes
+        The arrays to broadcast.
+
+    subok : bool, optional
+        This option is ignored by cuNumeric
+
+    Returns
+    -------
+    broadcasted : list of arrays
+        These arrays are views on the original arrays.
+        They are typically not contiguous.
+        Furthermore, more than one element of a broadcasted array
+        may refer to a single memory location.
+        If you need to write to the arrays, make copies first.
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+
+    """
+    arrs = [convert_to_cunumeric_ndarray(arr) for arr in args]
+    return _broadcast_arrays(arrs, subok=subok)
+
+
+class broadcast:
+    """Produce an object that broadcasts input parameters against one another.
+    It has shape and nd properties and may be used as an iterator.
+
+    Parameters
+    ----------
+    `*arrays` : array_likes
+        The arrays to broadcast.
+
+    Returns
+    -------
+    b: broadcast
+        Broadcast the input parameters against one another, and return an
+        object that encapsulates the result. Amongst others, it has shape
+        and nd properties, and may be used as an iterator.
+
+    """
+
+    def __init__(self, *arrays: Sequence[Any]) -> None:
+        arrs = [convert_to_cunumeric_ndarray(arr) for arr in arrays]
+        broadcasted = _broadcast_arrays(arrs)
+        self._iters = tuple(arr.flat for arr in broadcasted)
+        self._index = 0
+        self._shape = broadcasted[0].shape
+        self._size = np.prod(self.shape, dtype=int)
+
+    def __iter__(self) -> broadcast:
+        self._index = 0
+        return self
+
+    def __next__(self) -> Any:
+        if self._index < self.size:
+            result = tuple(each[self._index] for each in self._iters)
+            self._index += 1
+            return result
+
+    def reset(self) -> None:
+        """Reset the broadcasted result's iterator(s)."""
+        self._index = 0
+
+    @property
+    def index(self) -> int:
+        """current index in broadcasted result"""
+        return self._index
+
+    @property
+    def iters(self) -> Tuple[Iterable[Any], ...]:
+        """tuple of iterators along self’s "components." """
+        return self._iters
+
+    @property
+    def numiter(self) -> int:
+        """Number of iterators possessed by the broadcasted result."""
+        return len(self._iters)
+
+    @property
+    def nd(self) -> int:
+        """Number of dimensions of broadcasted result."""
+        return self.ndim
+
+    @property
+    def ndim(self) -> int:
+        """Number of dimensions of broadcasted result."""
+        return len(self.shape)
+
+    @property
+    def shape(self) -> NdShape:
+        """Shape of broadcasted result."""
+        return self._shape
+
+    @property
+    def size(self) -> int:
+        """Total size of broadcasted result."""
+        return self._size
+
+
 # Joining arrays
 
 
@@ -1479,8 +1707,8 @@ def check_shape_with_axis(
     ndim = inputs[0].ndim
     shape = inputs[0].shape
 
+    axis = normalize_axis_index(axis, ndim)
     if ndim >= 1:
-        axis = normalize_axis_index(axis, ndim)
         if _builtin_any(
             shape[:axis] != inp.shape[:axis]
             or shape[axis + 1 :] != inp.shape[axis + 1 :]
@@ -1516,7 +1744,7 @@ def check_shape_dtype_without_axis(
 
     # Cast arrays with the passed arguments (dtype, casting)
     if dtype is None:
-        dtype = np.find_common_type((inp.dtype for inp in inputs), [])
+        dtype = np.result_type(*[inp.dtype for inp in inputs])
     else:
         dtype = np.dtype(dtype)
 
@@ -1805,7 +2033,11 @@ def concatenate(
 
     # flatten arrays if axis == None and concatenate arrays on the first axis
     if axis is None:
-        inputs = list(inp.ravel() for inp in inputs)
+        # Reshape arrays in the `array_list` to handle scalars
+        reshaped = _atleast_nd(1, inputs)
+        if not isinstance(reshaped, list):
+            reshaped = [reshaped]
+        inputs = list(inp.ravel() for inp in reshaped)
         axis = 0
 
     # Check to see if we can build a new tuple of cuNumeric arrays
@@ -1912,7 +2144,7 @@ def vstack(tup: Sequence[ndarray]) -> ndarray:
     Multiple GPUs, Multiple CPUs
     """
     # Reshape arrays in the `array_list` if needed before concatenation
-    reshaped = _atleast_nd(2, tuple(tup))
+    reshaped = _atleast_nd(2, tup)
     if not isinstance(reshaped, list):
         reshaped = [reshaped]
     tup, common_info = check_shape_dtype_without_axis(
@@ -1960,7 +2192,14 @@ def hstack(tup: Sequence[ndarray]) -> ndarray:
     --------
     Multiple GPUs, Multiple CPUs
     """
-    tup, common_info = check_shape_dtype_without_axis(tup, hstack.__name__)
+    # Reshape arrays in the `array_list` to handle scalars
+    reshaped = _atleast_nd(1, tup)
+    if not isinstance(reshaped, list):
+        reshaped = [reshaped]
+
+    tup, common_info = check_shape_dtype_without_axis(
+        reshaped, hstack.__name__
+    )
     check_shape_with_axis(
         tup, hstack.__name__, axis=(0 if common_info.ndim == 1 else 1)
     )
@@ -2008,7 +2247,7 @@ def dstack(tup: Sequence[ndarray]) -> ndarray:
     Multiple GPUs, Multiple CPUs
     """
     # Reshape arrays to (1,N,1) for ndim ==1 or (M,N,1) for ndim == 2:
-    reshaped = _atleast_nd(3, tuple(tup))
+    reshaped = _atleast_nd(3, tup)
     if not isinstance(reshaped, list):
         reshaped = [reshaped]
     tup, common_info = check_shape_dtype_without_axis(
@@ -2052,14 +2291,19 @@ def column_stack(tup: Sequence[ndarray]) -> ndarray:
     --------
     Multiple GPUs, Multiple CPUs
     """
+    # Reshape arrays in the `array_list` to handle scalars
+    reshaped = _atleast_nd(1, tup)
+    if not isinstance(reshaped, list):
+        reshaped = [reshaped]
+
     tup, common_info = check_shape_dtype_without_axis(
-        tup, column_stack.__name__
+        reshaped, column_stack.__name__
     )
-    # When ndim == 1, hstack concatenates arrays along the first axis
+
     if common_info.ndim == 1:
         tup = list(inp.reshape((inp.shape[0], 1)) for inp in tup)
         common_info.shape = tup[0].shape
-    check_shape_with_axis(tup, dstack.__name__, 1)
+    check_shape_with_axis(tup, column_stack.__name__, 1)
     return _concatenate(
         tup,
         common_info,
@@ -2228,7 +2472,9 @@ def array_split(
             new_subarray = array[tuple(in_shape)].view()
         else:
             out_shape[axis] = 0
-            new_subarray = ndarray(tuple(out_shape), dtype=array.dtype)
+            new_subarray = ndarray(
+                tuple(out_shape), dtype=array.dtype, writeable=array._writeable
+            )
         result.append(new_subarray)
         start_idx = pts
 
@@ -2568,6 +2814,8 @@ def place(arr: ndarray, mask: ndarray, vals: ndarray) -> None:
     """
     if arr.size == 0:
         return
+
+    check_writeable(arr)
 
     if mask.size != arr.size:
         raise ValueError("arr array and condition array must be of same size")
@@ -3311,6 +3559,8 @@ def put_along_axis(
     if a.size == 0:
         return
 
+    check_writeable(a)
+
     if not np.issubdtype(indices.dtype, np.integer):
         raise TypeError("`indices` must be an integer array")
 
@@ -3612,6 +3862,8 @@ def putmask(a: ndarray, mask: ndarray, values: ndarray) -> None:
     if not a.shape == mask.shape:
         raise ValueError("mask and data must be the same size")
 
+    check_writeable(a)
+
     mask = mask._warn_and_convert(np.dtype(bool))
 
     if a.dtype != values.dtype:
@@ -3667,6 +3919,8 @@ def fill_diagonal(a: ndarray, val: ndarray, wrap: bool = False) -> None:
     """
     if val.size == 0 or a.size == 0:
         return
+
+    check_writeable(a)
 
     if a.ndim < 2:
         raise ValueError("array must be at least 2-d")
@@ -3909,7 +4163,9 @@ def matmul(
     """
     if a.ndim == 0 or b.ndim == 0:
         raise ValueError("Scalars not allowed in matmul")
+
     (a_modes, b_modes, out_modes) = matmul_modes(a.ndim, b.ndim)
+
     return _contract(
         a_modes,
         b_modes,
@@ -4068,6 +4324,7 @@ def tensordot(
     Multiple GPUs, Multiple CPUs
     """
     (a_modes, b_modes, out_modes) = tensordot_modes(a.ndim, b.ndim, axes)
+
     return _contract(
         a_modes,
         b_modes,
@@ -4120,6 +4377,7 @@ def _contract(
         raise ValueError(
             f"Expected {len(a_modes)}-d input array but got {a.ndim}-d"
         )
+
     if b is None:
         if len(b_modes) != 0:
             raise ValueError("Missing input array")
@@ -4127,16 +4385,18 @@ def _contract(
         raise ValueError(
             f"Expected {len(b_modes)}-d input array but got {b.ndim}-d"
         )
+
     if out is not None and len(out_modes) != out.ndim:
         raise ValueError(
             f"Expected {len(out_modes)}-d output array but got {out.ndim}-d"
         )
+
     if len(set(out_modes)) != len(out_modes):
         raise ValueError("Duplicate mode labels on output")
+
     if len(set(out_modes) - set(a_modes) - set(b_modes)) > 0:
         raise ValueError("Unknown mode labels on output")
 
-    # Handle types
     makes_view = b is None and len(a_modes) == len(out_modes)
     if dtype is not None and not makes_view:
         c_dtype = dtype
@@ -4146,9 +4406,12 @@ def _contract(
         c_dtype = a.dtype
     else:
         c_dtype = ndarray.find_common_type(a, b)
+
     a = _maybe_cast_input(a, c_dtype, casting)
+
     if b is not None:
         b = _maybe_cast_input(b, c_dtype, casting)
+
     out_dtype = out.dtype if out is not None else c_dtype
 
     # Handle duplicate modes on inputs
@@ -4387,8 +4650,13 @@ def einsum(
     Multiple GPUs, Multiple CPUs
     """
     operands_list = [convert_to_cunumeric_ndarray(op) for op in operands]
+
+    if out is not None:
+        out = convert_to_cunumeric_ndarray(out, share=True)
+
     if not optimize:
         optimize = NullOptimizer()
+
     # This call normalizes the expression (adds the output part if it's
     # missing, expands '...') and checks for some errors (mismatch on number
     # of dimensions between operand and expression, wrong number of operands,
@@ -4426,6 +4694,7 @@ def einsum(
             dtype=dtype,
         )
         computed_operands.append(sub_result)
+
     assert len(computed_operands) == 1
     return computed_operands[0]
 
@@ -5311,6 +5580,522 @@ def nancumsum(
     )
 
 
+@add_boilerplate("a")
+def nanargmax(
+    a: ndarray,
+    axis: Any = None,
+    out: Union[ndarray, None] = None,
+    *,
+    keepdims: bool = False,
+) -> ndarray:
+    """
+    Return the indices of the maximum values in the specified axis ignoring
+    NaNs. For empty arrays, ValueError is raised. For all-NaN slices,
+    ValueError is raised only when CUNUMERIC_NUMPY_COMPATIBILITY
+    environment variable is set, otherwise identity is returned.
+
+    Warning: results cannot be trusted if a slice contains only NaNs
+    and -Infs.
+
+    Parameters
+    ----------
+    a : array_like
+        Input array.
+    axis : int, optional
+        By default, the index corresponds to the flattened array, otherwise
+        along the specified axis.
+    out : ndarray, optional
+        If provided, the result will be inserted into this array. It should
+        be of the appropriate shape and dtype.
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left
+        in the result as dimensions with size one. With this option,
+        the result will broadcast correctly against the array.
+
+    Returns
+    -------
+    index_array : ndarray[int]
+        Array of indices into the array. It has the same shape as `a.shape`
+        with the dimension along `axis` removed.
+
+    See Also
+    --------
+    numpy.nanargmin, numpy.nanargmax
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+    """
+
+    if a.size == 0:
+        raise ValueError("attempt to get nanargmax of an empty sequence")
+
+    if cunumeric_settings.numpy_compat() and a.dtype.kind == "f":
+        if any(all(isnan(a), axis=axis)):
+            raise ValueError("Array/Slice contains only NaNs")
+
+    unary_red_code = get_non_nan_unary_red_code(
+        a.dtype.kind, UnaryRedCode.NANARGMAX
+    )
+
+    return a._perform_unary_reduction(
+        unary_red_code,
+        a,
+        axis=axis,
+        out=out,
+        keepdims=keepdims,
+        res_dtype=np.dtype(np.int64),
+    )
+
+
+@add_boilerplate("a")
+def nanargmin(
+    a: ndarray,
+    axis: Any = None,
+    out: Union[ndarray, None] = None,
+    *,
+    keepdims: bool = False,
+) -> ndarray:
+    """
+    Return the indices of the minimum values in the specified axis ignoring
+    NaNs. For empty arrays, ValueError is raised. For all-NaN slices,
+    ValueError is raised only when CUNUMERIC_NUMPY_COMPATIBILITY
+    environment variable is set, otherwise identity is returned.
+
+    Warning: results cannot be trusted if a slice contains only NaNs
+    and -Infs.
+
+    Parameters
+    ----------
+    a : array_like
+        Input array.
+    axis : int, optional
+        By default, the index corresponds to the flattened array, otherwise
+        along the specified axis.
+    out : ndarray, optional
+        If provided, the result will be inserted into this array. It should
+        be of the appropriate shape and dtype.
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left
+        in the result as dimensions with size one. With this option,
+        the result will broadcast correctly against the array.
+
+    Returns
+    -------
+    index_array : ndarray[int]
+        Array of indices into the array. It has the same shape as `a.shape`
+        with the dimension along `axis` removed.
+
+    See Also
+    --------
+    numpy.nanargmin, numpy.nanargmax
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+    """
+
+    if a.size == 0:
+        raise ValueError("attempt to get nanargmin of an empty sequence")
+
+    if cunumeric_settings.numpy_compat() and a.dtype.kind == "f":
+        if any(all(isnan(a), axis=axis)):
+            raise ValueError("Array/Slice contains only NaNs")
+
+    unary_red_code = get_non_nan_unary_red_code(
+        a.dtype.kind, UnaryRedCode.NANARGMIN
+    )
+
+    return a._perform_unary_reduction(
+        unary_red_code,
+        a,
+        axis=axis,
+        out=out,
+        keepdims=keepdims,
+        res_dtype=np.dtype(np.int64),
+    )
+
+
+@add_boilerplate("a")
+def nanmin(
+    a: ndarray,
+    axis: Any = None,
+    out: Union[ndarray, None] = None,
+    keepdims: bool = False,
+    initial: Optional[Union[int, float]] = None,
+    where: Any = True,
+) -> ndarray:
+    """
+    Return minimum of an array or minimum along an axis, ignoring any
+    NaNs. When all-NaN slices are encountered, a NaN is returned
+    for that slice only when CUNUMERIC_NUMPY_COMPATIBILITY environment
+    variable is set, otherwise identity is returned.
+    Empty slices will raise a ValueError
+
+    Parameters
+    ----------
+    a : array_like
+        Array containing numbers whose minimum is desired. If a is not an
+        array, a conversion is attempted.
+
+    axis : {int, tuple of int, None}, optional
+        Axis or axes along which the minimum is computed. The default is to
+        compute the minimum of the flattened array.
+
+    out : ndarray, optional
+        Alternative output array in which to place the result.  Must
+        be of the same shape and buffer length as the expected output.
+        See `ufuncs-output-type` for more details.
+
+    keepdims : bool, Optional
+        If this is set to True, the axes which are reduced are left
+        in the result as dimensions with size one. With this option,
+        the result will broadcast correctly against the input array.
+
+        If the default value is passed, then `keepdims` will not be
+        passed through to the `amin` method of sub-classes of
+        `ndarray`, however any non-default value will be.  If the
+        sub-class' method does not implement `keepdims` any
+        exceptions will be raised.
+
+    initial : scalar, optional
+        The maximum value of an output element. Must be present to allow
+        computation on empty slice. See `~cunumeric.ufunc.reduce` for details.
+
+    where : array_like[bool], optional
+        Elements to compare for the minimum. See `~cunumeric.ufunc.reduce`
+        for details.
+
+    Returns
+    -------
+    nanmin : ndarray or scalar
+        Minimum of `a`. If `axis` is None, the result is a scalar value.
+        If `axis` is given, the result is an array of dimension
+        ``a.ndim - 1``.
+
+    Notes
+    -----
+    CuNumeric's implementation will not raise a Runtime Warning for
+    slices with all-NaNs
+
+    See Also
+    --------
+    numpy.nanmin, numpy.nanmax, numpy.min, numpy.max, numpy.isnan,
+    numpy.maximum
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+    """
+
+    unary_red_code = get_non_nan_unary_red_code(
+        a.dtype.kind, UnaryRedCode.NANMIN
+    )
+
+    out_array = a._perform_unary_reduction(
+        unary_red_code,
+        a,
+        axis=axis,
+        out=out,
+        keepdims=keepdims,
+        initial=initial,
+        where=where,
+    )
+
+    if cunumeric_settings.numpy_compat() and a.dtype.kind == "f":
+        where = all(isnan(a), axis=axis, keepdims=keepdims)
+        putmask(out_array, where, np.nan)  # type: ignore
+
+    return out_array
+
+
+@add_boilerplate("a")
+def nanmax(
+    a: ndarray,
+    axis: Any = None,
+    out: Union[ndarray, None] = None,
+    keepdims: bool = False,
+    initial: Optional[Union[int, float]] = None,
+    where: Any = True,
+) -> ndarray:
+    """
+    Return the maximum of an array or maximum along an axis, ignoring any
+    NaNs. When all-NaN slices are encountered, a NaN is returned
+    for that slice only when CUNUMERIC_NUMPY_COMPATIBILITY environment
+    variable is set, otherwise identity is returned.
+    Empty slices will raise a ValueError
+
+    Parameters
+    ----------
+    a : array_like
+        Array containing numbers whose maximum is desired. If a is not
+        an array, a conversion is attempted.
+
+    axis : None or int or tuple[int], optional
+        Axis or axes along which to operate.  By default, flattened input is
+        used.
+
+        If this is a tuple of ints, the maximum is selected over multiple axes,
+        instead of a single axis or all the axes as before.
+
+    out : ndarray, optional
+        Alternative output array in which to place the result.  Must
+        be of the same shape and buffer length as the expected output.
+        See `ufuncs-output-type` for more details.
+
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left
+        in the result as dimensions with size one. With this option,
+        the result will broadcast correctly against the input array.
+
+        If the default value is passed, then `keepdims` will not be
+        passed through to the `amax` method of sub-classes of
+        `ndarray`, however any non-default value will be.  If the
+        sub-class' method does not implement `keepdims` any
+        exceptions will be raised.
+
+    initial : scalar, optional
+        The minimum value of an output element. Must be present to allow
+        computation on empty slice. See `~cunumeric.ufunc.reduce` for details.
+
+    where : array_like[bool], optional
+        Elements to compare for the maximum. See `~cunumeric.ufunc.reduce`
+        for details.
+
+    Returns
+    -------
+    nanmax : ndarray or scalar
+        An array with the same shape as `a`, with the specified axis
+        removed. If `a` is 0-d array, of if axis is None, an ndarray
+        scalar is returned. The same dtype as `a` is returned.
+
+    Notes
+    -----
+    CuNumeric's implementation will not raise a Runtime Warning for
+    slices with all-NaNs
+
+    See Also
+    --------
+    numpy.nanmin, numpy.amax, numpy.isnan, numpy.fmax, numpy.maximum,
+    numpy.isfinite
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+    """
+
+    unary_red_code = get_non_nan_unary_red_code(
+        a.dtype.kind, UnaryRedCode.NANMAX
+    )
+
+    out_array = a._perform_unary_reduction(
+        unary_red_code,
+        a,
+        axis=axis,
+        out=out,
+        keepdims=keepdims,
+        initial=initial,
+        where=where,
+    )
+
+    if cunumeric_settings.numpy_compat() and a.dtype.kind == "f":
+        where = all(isnan(a), axis=axis, keepdims=keepdims)
+        putmask(out_array, where, np.nan)  # type: ignore
+
+    return out_array
+
+
+@add_boilerplate("a")
+def nanprod(
+    a: ndarray,
+    axis: Any = None,
+    dtype: Any = None,
+    out: Union[ndarray, None] = None,
+    keepdims: bool = False,
+    initial: Optional[Union[int, float]] = None,
+    where: Any = True,
+) -> ndarray:
+    """
+    Return the product of array elements over a given axis treating
+    Not a Numbers (NaNs) as ones.
+
+    One is returned for slices that are all-NaN or empty.
+
+    Parameters
+    ----------
+    a : array_like
+        Input array.
+    axis : int, optional
+         Axis or axes along which the product is computed. The
+         default is to compute the product of the flattened array.
+    dtype : data-type, optional
+         The type of the returned array and of the accumulator in
+         which the elements are summed. By default, the dtype of a
+         is used. An exception is when a has an integer type with
+         less precision than the platform (u)intp. In that case,
+         the default will be either (u)int32 or (u)int64 depending
+         on whether the platform is 32 or 64 bits. For inexact
+         inputs, dtype must be inexact.
+    out : ndarray, optional
+        Alternate output array in which to place the result. The
+        default is None. If provided, it must have the same shape as
+        the expected output, but the type will be cast if necessary.
+        See Output type determination for more details. The casting of
+        NaN to integer can yield unexpected results.
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left in the
+        result as dimensions with size one. With this option, the result
+        will broadcast correctly against the input array.
+
+        If the default value is passed, then `keepdims` will not be
+        passed through to the `prod` method of sub-classes of
+        `ndarray`, however any non-default value will be.  If the
+        sub-class' method does not implement `keepdims` any
+        exceptions will be raised.
+    initial : scalar, optional
+        The starting value for this product. See `~cunumeric.ufunc.reduce` for
+        details.
+    where : array_like[bool], optional
+        Elements to include in the product. See `~cunumeric.ufunc.reduce` for
+        details.
+
+    Returns
+    -------
+    nanprod: ndarray, see `dtype` parameter above.
+        A new array holding the result is returned unless out is
+        specified, in which case it is returned.
+
+    See Also
+    --------
+    numpy.prod, numpy.isnan
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+
+    """
+
+    # Note: if the datatype of the input array is int and less
+    # than that of the platform int, then a convert task is launched
+    # in np.prod to take care of the type casting
+
+    if a.dtype == np.complex128:
+        raise NotImplementedError(
+            "operation is not supported for complex128 arrays"
+        )
+
+    if a.dtype.kind in ("f", "c"):
+        unary_red_code = UnaryRedCode.NANPROD
+    else:
+        unary_red_code = UnaryRedCode.PROD
+
+    return a._perform_unary_reduction(
+        unary_red_code,
+        a,
+        axis=axis,
+        dtype=dtype,
+        out=out,
+        keepdims=keepdims,
+        initial=initial,
+        where=where,
+    )
+
+
+@add_boilerplate("a")
+def nansum(
+    a: ndarray,
+    axis: Any = None,
+    dtype: Any = None,
+    out: Union[ndarray, None] = None,
+    keepdims: bool = False,
+    initial: Optional[Union[int, float]] = None,
+    where: Any = True,
+) -> ndarray:
+    """
+    Return the sum of array elements over a given axis treating
+    Not a Numbers (NaNs) as ones.
+
+    Zero is returned for slices that are all-NaN or empty.
+
+    Parameters
+    ----------
+    a : array_like
+        Array containing numbers whose product is desired. If a is not
+        an array, a conversion is attempted.
+
+    axis : None or int or tuple[int], optional
+        Axis or axes along which a sum is performed.  The default,
+        axis=None, will sum all of the elements of the input array.
+        If axis is negative it counts from the last to the first axis.
+
+        If axis is a tuple of ints, a sum is performed on all of the
+        axes specified in the tuple instead of a single axis or all
+        the axes as before.
+
+    dtype : data-type, optional
+        The type of the returned array and of the accumulator in which
+        the elements are summed.  The dtype of `a` is used by default
+        unless `a` has an integer dtype of less precision than the
+        default platform integer.  In that case, if `a` is signed then
+        the platform integer is used while if `a` is unsigned then an
+        unsigned integer of the same precision as the platform integer
+        is used.
+
+    out : ndarray, optional
+        Alternative output array in which to place the result. It must
+        have the same shape as the expected output, but the type of
+        the output values will be cast if necessary.
+
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left
+        in the result as dimensions with size one. With this option,
+        the result will broadcast correctly against the input array.
+
+    initial : scalar, optional
+        Starting value for the sum. See `~cunumeric.ufunc.reduce` for
+        details.
+
+    where : array_like[bool], optional
+        Elements to include in the sum. See `~cunumeric.ufunc.reduce` for
+        details.
+
+    Returns
+    -------
+    nansum : ndarray, see `dtype` parameter above.
+        A new array holding the result is returned unless out is
+        specified, in which case it is returned. The result has the
+        same size as a, and the same shape as a if axis is not None or
+        a is a 1-d array.
+
+    See Also
+    --------
+    numpy.nansum, numpy.isnan, numpy.isfinite
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+    """
+
+    # Note that np.nansum and np.sum allow complex datatypes
+    # so there are no "disallowed types" for this API
+
+    if a.dtype.kind in ("f", "c"):
+        unary_red_code = UnaryRedCode.NANSUM
+    else:
+        unary_red_code = UnaryRedCode.SUM
+
+    return a._perform_unary_reduction(
+        unary_red_code,
+        a,
+        axis=axis,
+        dtype=dtype,
+        out=out,
+        keepdims=keepdims,
+        initial=initial,
+        where=where,
+    )
+
+
 # Exponents and logarithms
 
 
@@ -5756,7 +6541,7 @@ def unique(
 @add_boilerplate("a")
 def argsort(
     a: ndarray,
-    axis: int = -1,
+    axis: Union[int, None] = -1,
     kind: SortType = "quicksort",
     order: Optional[Union[str, list[str]]] = None,
 ) -> ndarray:
@@ -5869,7 +6654,7 @@ def searchsorted(
 @add_boilerplate("a")
 def sort(
     a: ndarray,
-    axis: int = -1,
+    axis: Union[int, None] = -1,
     kind: SortType = "quicksort",
     order: Optional[Union[str, list[str]]] = None,
 ) -> ndarray:
@@ -5955,7 +6740,7 @@ def sort_complex(a: ndarray) -> ndarray:
 def argpartition(
     a: ndarray,
     kth: Union[int, Sequence[int]],
-    axis: int = -1,
+    axis: Union[int, None] = -1,
     kind: SelectKind = "introselect",
     order: Optional[Union[str, list[str]]] = None,
 ) -> ndarray:
@@ -6011,7 +6796,7 @@ def argpartition(
 def partition(
     a: ndarray,
     kth: Union[int, Sequence[int]],
-    axis: int = -1,
+    axis: Union[int, None] = -1,
     kind: SelectKind = "introselect",
     order: Optional[Union[str, list[str]]] = None,
 ) -> ndarray:
@@ -6097,6 +6882,11 @@ def argmax(
     --------
     numpy.argmax
 
+    Notes
+    -----
+    CuNumeric's parallel implementation may yield different results from NumPy
+    when the array contains NaN(s).
+
     Availability
     --------
     Multiple GPUs, Multiple CPUs
@@ -6140,6 +6930,11 @@ def argmin(
     See Also
     --------
     numpy.argmin
+
+    Notes
+    -----
+    CuNumeric's parallel implementation may yield different results from NumPy
+    when the array contains NaN(s).
 
     Availability
     --------
@@ -6341,11 +7136,13 @@ def bincount(
         # Handle the special case of 0-D array
         if weights is None:
             out = zeros((minlength,), dtype=np.dtype(np.int64))
-            out[x[0]] = 1
+            # TODO: Remove this "type: ignore" once @add_boilerplate can
+            # propagate "ndarray -> ndarray | npt.ArrayLike" in wrapped sigs
+            out[x[0]] = 1  # type: ignore [assignment]
         else:
             out = zeros((minlength,), dtype=weights.dtype)
             index = x[0]
-            out[index] = weights[index]
+            out[index] = weights[0]
     else:
         # Normal case of bincount
         if weights is None:
@@ -6363,3 +7160,846 @@ def bincount(
             )
             out._thunk.bincount(x._thunk, weights=weights._thunk)
     return out
+
+
+# Quantiles
+
+
+# account for 0-based indexing
+# there's no negative numbers
+# arithmetic at this level,
+# (pos, k) are always positive!
+#
+def floor_i(k: int | float) -> int:
+    j = k - 1 if k > 0 else 0
+    return int(j)
+
+
+# Generic rule: if `q` input value falls onto a node, then return that node
+
+
+# Discontinuous methods:
+#
+# 'inverted_cdf'
+# q = quantile input \in [0, 1]
+# n = sizeof(array)
+#
+def inverted_cdf(q: float, n: int) -> tuple[float, int]:
+    pos = q * n
+    k = math.floor(pos)
+
+    g = pos - k
+    gamma = 1.0 if g > 0 else 0.0
+
+    j = int(k) - 1
+    if j < 0:
+        return (0.0, 0)
+    else:
+        return (gamma, j)
+
+
+# 'averaged_inverted_cdf'
+#
+def averaged_inverted_cdf(q: float, n: int) -> tuple[float, int]:
+    pos = q * n
+    k = math.floor(pos)
+
+    g = pos - k
+    gamma = 1.0 if g > 0 else 0.5
+
+    j = int(k) - 1
+    if j < 0:
+        return (0.0, 0)
+    elif j >= n - 1:
+        return (1.0, n - 2)
+    else:
+        return (gamma, j)
+
+
+# 'closest_observation'
+#
+def closest_observation(q: float, n: int) -> tuple[float, int]:
+    # p = q*n - 0.5
+    # pos = 0 if p < 0 else p
+
+    # weird departure from paper
+    # (bug?), but this fixes it:
+    # also, j even in original paper
+    # applied to 1-based indexing; we have 0-based!
+    # numpy impl. doesn't account that the original paper used
+    # 1-based indexing, 0-based j is still checked for evennes!
+    # (see proof in quantile_policies.py)
+    #
+    p0 = q * n - 0.5
+    p = p0 - 1.0
+
+    pos = 0 if p < 0 else p0
+    k = math.floor(pos)
+
+    j = floor_i(k)
+    gamma = 1 if k < pos else (0 if j % 2 == 0 else 1)
+
+    return (gamma, j)
+
+
+# Continuous methods:
+#
+# Parzen method:
+# 'interpolated_inverted_cdf'
+#
+def interpolated_inverted_cdf(q: float, n: int) -> tuple[float, int]:
+    pos = q * n
+    k = math.floor(pos)
+    # gamma = pos-k
+    # this fixes it:
+    #
+    gamma = 0.0 if k == 0 else pos - k
+    j = floor_i(k)
+    return (gamma, j)
+
+
+# Hazen method:
+# 'hazen'
+#
+def hazen(q: float, n: int) -> tuple[float, int]:
+    pos = q * n + 0.5
+    k = math.floor(pos)
+    # gamma = pos-k
+    #
+    # this fixes it:
+    # (when pos > n: this actually selects the right point,
+    #  which is the correct choice, because right = arr[n]
+    #  gets invalidated)
+    #
+    gamma = 0.0 if (pos < 1 or pos > n) else pos - k
+
+    j = floor_i(k)
+    return (gamma, j)
+
+
+# Weibull method:
+# 'weibull'
+#
+def weibull(q: float, n: int) -> tuple[float, int]:
+    pos = q * (n + 1)
+
+    k = math.floor(pos)
+    # gamma = pos-k
+    #
+    # this fixes it:
+    # (when pos > n: this actually selects the right point,
+    #  which is the correct choice, because right = arr[n]
+    #  gets invalidated)
+    #
+    gamma = 0.0 if (pos < 1 or pos > n) else pos - k
+
+    j = floor_i(k)
+
+    if j >= n:
+        j = n - 1
+
+    return (gamma, j)
+
+
+# Gumbel method:
+# 'linear'
+#
+def linear(q: float, n: int) -> tuple[float, int]:
+    pos = q * (n - 1) + 1
+    k = math.floor(pos)
+    # gamma = pos-k
+    #
+    # this fixes it:
+    # (when pos > n: this actually selects the right point,
+    #  which is the correct choice, because right = arr[n]
+    #  gets invalidated)
+    #
+    gamma = 0.0 if (pos < 1 or pos > n) else pos - k
+
+    j = floor_i(k)
+    return (gamma, j)
+
+
+# Johnson & Kotz method:
+# 'median_unbiased'
+#
+def median_unbiased(q: float, n: int) -> tuple[float, int]:
+    fract = 1.0 / 3.0
+    pos = q * (n + fract) + fract
+    k = math.floor(pos)
+
+    # gamma = pos-k
+    #
+    # this fixes it:
+    # (when pos > n: this actually selects the right point,
+    #  which is the correct choice, because right = arr[n]
+    #  gets invalidated)
+    #
+    gamma = 0.0 if (pos < 1 or pos > n) else pos - k
+
+    j = floor_i(k)
+    return (gamma, j)
+
+
+# Blom method:
+# 'normal_unbiased'
+#
+def normal_unbiased(q: float, n: int) -> tuple[float, int]:
+    fract1 = 0.25
+    fract2 = 3.0 / 8.0
+    pos = q * (n + fract1) + fract2
+    k = math.floor(pos)
+
+    # gamma = pos-k
+    #
+    # this fixes it:
+    # (when pos > n: this actually selects the right point,
+    #  which is the correct choice, because right = arr[n]
+    #  gets invalidated)
+    #
+    gamma = 0.0 if (pos < 1 or pos > n) else pos - k
+
+    j = floor_i(k)
+    return (gamma, j)
+
+
+# `lower`
+#
+def lower(q: float, n: int) -> tuple[float, int]:
+    gamma = 0.0
+    pos = q * (n - 1)
+    k = math.floor(pos)
+
+    j = int(k)
+    return (gamma, j)
+
+
+# `higher`
+#
+def higher(q: float, n: int) -> tuple[float, int]:
+    pos = q * (n - 1)
+    k = math.floor(pos)
+
+    # Generic rule: (k == pos)
+    gamma = 0.0 if (pos == 0 or k == pos) else 1.0
+
+    j = int(k)
+    return (gamma, j)
+
+
+# `midpoint`
+#
+def midpoint(q: float, n: int) -> tuple[float, int]:
+    pos = q * (n - 1)
+    k = math.floor(pos)
+
+    # Generic rule: (k == pos)
+    gamma = 0.0 if (pos == 0 or k == pos) else 0.5
+
+    j = int(k)
+    return (gamma, j)
+
+
+# `nearest`
+#
+def nearest(q: float, n: int) -> tuple[float, int]:
+    pos = q * (n - 1)
+
+    # k = floor(pos)
+    # gamma = 1.0 if pos - k >= 0.5 else 0.0
+
+    k = np.round(pos)
+    gamma = 0.0
+
+    j = int(k)
+    return (gamma, j)
+
+
+# for the case when axis = tuple (non-singleton)
+# reshuffling might have to be done (if tuple is non-consecutive)
+# and the src array must be collapsed along that set of axes
+#
+# args:
+#
+# arr:    [in] source nd-array on which quantiles are calculated;
+# axes_set: [in] tuple or list of axes (indices less than arr dimension);
+#
+# return: pair: (minimal_index, reshuffled_and_collapsed source array)
+def reshuffle_reshape(
+    arr: ndarray, axes_set: Iterable[int]
+) -> tuple[int, ndarray]:
+    ndim = len(arr.shape)
+
+    sorted_axes = tuple(sorted(axes_set))
+
+    min_dim_index = sorted_axes[0]
+    num_axes = len(sorted_axes)
+    reshuffled_axes = tuple(range(min_dim_index, min_dim_index + num_axes))
+
+    non_consecutive = sorted_axes != reshuffled_axes
+    if non_consecutive:
+        arr_shuffled = moveaxis(arr, sorted_axes, reshuffled_axes)
+    else:
+        arr_shuffled = arr
+
+    # shape_reshuffled = arr_shuffled.shape # debug
+    collapsed_shape = np.prod([arr_shuffled.shape[i] for i in reshuffled_axes])
+
+    redimed = tuple(range(0, min_dim_index + 1)) + tuple(
+        range(min_dim_index + num_axes, ndim)
+    )
+    reshaped = tuple(
+        [
+            collapsed_shape if k == min_dim_index else arr_shuffled.shape[k]
+            for k in redimed
+        ]
+    )
+
+    arr_reshaped = arr_shuffled.reshape(reshaped)
+    return (min_dim_index, arr_reshaped)
+
+
+# args:
+#
+# arr:      [in] source nd-array on which quantiles are calculated;
+#                preccondition: assumed sorted!
+# q_arr:    [in] quantile input values nd-array;
+# axis:     [in] axis along which quantiles are calculated;
+# method:   [in] func(q, n) returning (gamma, j),
+#                where = array1D.size;
+# keepdims: [in] boolean flag specifying whether collapsed axis
+#                should be kept as dim=1;
+# to_dtype: [in] dtype to convert the result to;
+# qs_all:   [in/out] result pass through or created (returned)
+#
+def quantile_impl(
+    arr: ndarray,
+    q_arr: npt.NDArray[Any],
+    axis: Optional[int],
+    axes_set: Iterable[int],
+    original_shape: tuple[int, ...],
+    method: Callable[[float, int], tuple[float, int]],
+    keepdims: bool,
+    to_dtype: np.dtype[Any],
+    qs_all: Optional[ndarray],
+) -> ndarray:
+    ndims = len(arr.shape)
+
+    if axis is None:
+        n = arr.size
+
+        if keepdims:
+            remaining_shape = (1,) * len(original_shape)
+        else:
+            remaining_shape = ()  # only `q_arr` dictates shape;
+        # quantile applied to `arr` seen as 1D;
+    else:
+        n = arr.shape[axis]
+
+        # arr.shape -{axis}; if keepdims use 1 for arr.shape[axis]:
+        # (can be empty [])
+        #
+        if keepdims:
+            remaining_shape = tuple(
+                1 if k in axes_set else original_shape[k]
+                for k in range(0, len(original_shape))
+            )
+        else:
+            remaining_shape = tuple(
+                arr.shape[k] for k in range(0, ndims) if k != axis
+            )
+
+    # compose qarr.shape with arr.shape:
+    #
+    # result.shape = (q_arr.shape, arr.shape -{axis}):
+    #
+    qresult_shape = (*q_arr.shape, *remaining_shape)
+
+    # construct result NdArray, non-flattening approach:
+    #
+    if qs_all is None:
+        qs_all = zeros(qresult_shape, dtype=to_dtype)
+    else:
+        # implicit conversion from to_dtype to qs_all.dtype assumed
+        #
+        if qs_all.shape != qresult_shape:
+            raise ValueError("wrong shape on output array")
+
+    for index, q in np.ndenumerate(q_arr):
+        (gamma, j) = method(q, n)
+        (left_pos, right_pos) = (j, j + 1)
+
+        # (N-1) dimensional ndarray of left, right
+        # neighbor values:
+        #
+        # non-flattening approach:
+        #
+        # extract values at index=left_pos;
+        arr_1D_lvals = arr.take(left_pos, axis)
+        arr_vals_shape = arr_1D_lvals.shape
+
+        if right_pos >= n:
+            # some quantile methods may result in j==(n-1),
+            # hence (j+1) could surpass array boundary;
+            #
+            arr_1D_rvals = zeros(arr_vals_shape, dtype=arr_1D_lvals.dtype)
+        else:
+            # extract values at index=right_pos;
+            arr_1D_rvals = arr.take(right_pos, axis)
+
+        # vectorized for axis != None;
+        # (non-flattening approach)
+        #
+        if len(index) == 0:
+            left = (1.0 - gamma) * arr_1D_lvals.reshape(qs_all.shape)
+            right = gamma * arr_1D_rvals.reshape(qs_all.shape)
+            qs_all[...] = left + right
+        else:
+            left = (1.0 - gamma) * arr_1D_lvals.reshape(qs_all[index].shape)
+            right = gamma * arr_1D_rvals.reshape(qs_all[index].shape)
+            qs_all[index] = left + right
+
+    return qs_all
+
+
+@add_boilerplate("a")
+def quantile(
+    a: ndarray,
+    q: Union[float, Iterable[float], ndarray],
+    axis: Union[None, int, tuple[int, ...]] = None,
+    out: Optional[ndarray] = None,
+    overwrite_input: bool = False,
+    method: str = "linear",
+    keepdims: bool = False,
+) -> ndarray:
+    """
+    Compute the q-th quantile of the data along the specified axis.
+
+    Parameters
+    ----------
+    a : array_like
+        Input array or object that can be converted to an array.
+    q : array_like of float
+        Quantile or sequence of quantiles to compute, which must be between
+        0 and 1 inclusive.
+    axis : {int, tuple of int, None}, optional
+        Axis or axes along which the quantiles are computed. The default is
+        to compute the quantile(s) along a flattened version of the array.
+    out : ndarray, optional
+        Alternative output array in which to place the result. It must have
+        the same shape as the expected output.
+    overwrite_input : bool, optional
+        If True, then allow the input array `a` to be modified by
+        intermediate calculations, to save memory. In this case, the
+        contents of the input `a` after this function completes is
+        undefined.
+    method : str, optional
+        This parameter specifies the method to use for estimating the
+        quantile.  The options sorted by their R type
+        as summarized in the H&F paper [1]_ are:
+        1. 'inverted_cdf'
+        2. 'averaged_inverted_cdf'
+        3. 'closest_observation'
+        4. 'interpolated_inverted_cdf'
+        5. 'hazen'
+        6. 'weibull'
+        7. 'linear'  (default)
+        8. 'median_unbiased'
+        9. 'normal_unbiased'
+        The first three methods are discontinuous.  NumPy further defines the
+        following discontinuous variations of the default 'linear' (7.) option:
+        * 'lower'
+        * 'higher',
+        * 'midpoint'
+        * 'nearest'
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left in
+        the result as dimensions with size one. With this option, the
+        result will broadcast correctly against the original array `a`.
+
+    Returns
+    -------
+    quantile : scalar or ndarray
+        If `q` is a single quantile and `axis=None`, then the result
+        is a scalar. If multiple quantiles are given, first axis of
+        the result corresponds to the quantiles. The other axes are
+        the axes that remain after the reduction of `a`. If the input
+        contains integers or floats smaller than ``float64``, the output
+        data-type is ``float64``. Otherwise, the output data-type is the
+        same as that of the input. If `out` is specified, that array is
+        returned instead.
+
+    Raises
+    ------
+    TypeError
+        If the type of the input is complex.
+
+    See Also
+    --------
+    numpy.quantile
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+
+    References
+    ----------
+    .. [1] R. J. Hyndman and Y. Fan,
+       "Sample quantiles in statistical packages,"
+       The American Statistician, 50(4), pp. 361-365, 1996
+    """
+
+    dict_methods = {
+        "inverted_cdf": inverted_cdf,
+        "averaged_inverted_cdf": averaged_inverted_cdf,
+        "closest_observation": closest_observation,
+        "interpolated_inverted_cdf": interpolated_inverted_cdf,
+        "hazen": hazen,
+        "weibull": weibull,
+        "linear": linear,
+        "median_unbiased": median_unbiased,
+        "normal_unbiased": normal_unbiased,
+        "lower": lower,
+        "higher": higher,
+        "midpoint": midpoint,
+        "nearest": nearest,
+    }
+
+    real_axis: Optional[int]
+    axes_set: Iterable[int] = []
+    original_shape = a.shape
+
+    if axis is not None and isinstance(axis, Iterable):
+        if len(axis) == 1:
+            real_axis = axis[0]
+            a_rr = a
+        else:
+            (real_axis, a_rr) = reshuffle_reshape(a, axis)
+            # What happens with multiple axes and overwrite_input = True ?
+            # It seems overwrite_input is reset to False;
+            overwrite_input = False
+        axes_set = axis
+    else:
+        real_axis = axis
+        a_rr = a
+        if real_axis is not None:
+            axes_set = [real_axis]
+
+    # covers both array-like and scalar cases:
+    #
+    q_arr = np.asarray(q)
+
+    # in the future k-sort (partition)
+    # might be faster, for now it uses sort
+    # arr = partition(arr, k = floor(nq), axis = real_axis)
+    # but that would require a k-sort call for each `q`!
+    # too expensive for many `q` values...
+    # if no axis given then elements are sorted as a 1D array
+    #
+    if overwrite_input:
+        a_rr.sort(axis=real_axis)
+        arr = a_rr
+    else:
+        arr = sort(a_rr, axis=real_axis)
+
+    if arr.dtype.kind == "c":
+        raise TypeError("input array cannot be of complex type")
+
+    # return type dependency on arr.dtype:
+    #
+    # it depends on interpolation method;
+    # For discontinuous methods returning either end of the interval within
+    # which the quantile falls, or the other; arr.dtype is returned;
+    # else, logic below:
+    #
+    # if is_float(arr_dtype) && (arr.dtype >= dtype('float64')) then
+    #    arr.dtype
+    # else
+    #    dtype('float64')
+    #
+    # see https://github.com/numpy/numpy/issues/22323
+    #
+    if method in [
+        "inverted_cdf",
+        "closest_observation",
+        "lower",
+        "higher",
+        "nearest",
+    ]:
+        to_dtype = arr.dtype
+    else:
+        to_dtype = np.dtype("float64")
+
+        # in case dtype("float128") becomes supported:
+        #
+        # to_dtype = (
+        #     arr.dtype
+        #     if (arr.dtype == np.dtype("float128"))
+        #     else np.dtype("float64")
+        # )
+
+    res = quantile_impl(
+        arr,
+        q_arr,
+        real_axis,
+        axes_set,
+        original_shape,
+        dict_methods[method],
+        keepdims,
+        to_dtype,
+        out,
+    )
+
+    if out is not None:
+        # out = res.astype(out.dtype) -- conversion done inside impl
+        return out
+    else:
+        return res
+
+
+@add_boilerplate("a")
+def percentile(
+    a: ndarray,
+    q: Union[float, Iterable[float], ndarray],
+    axis: Union[None, int, tuple[int, ...]] = None,
+    out: Optional[ndarray] = None,
+    overwrite_input: bool = False,
+    method: str = "linear",
+    keepdims: bool = False,
+) -> ndarray:
+    """
+    Compute the q-th percentile of the data along the specified axis.
+
+    Parameters
+    ----------
+    a : array_like
+        Input array or object that can be converted to an array.
+    q : array_like of float
+        Percentile or sequence of percentiles to compute, which must be between
+        0 and 100 inclusive.
+    axis : {int, tuple of int, None}, optional
+        Axis or axes along which the percentiles are computed. The default is
+        to compute the percentile(s) along a flattened version of the array.
+    out : ndarray, optional
+        Alternative output array in which to place the result. It must have
+        the same shape as the expected output.
+    overwrite_input : bool, optional
+        If True, then allow the input array `a` to be modified by
+        intermediate calculations, to save memory. In this case, the
+        contents of the input `a` after this function completes is
+        undefined.
+    method : str, optional
+        This parameter specifies the method to use for estimating the
+        percentile.  The options sorted by their R type
+        as summarized in the H&F paper [1]_ are:
+        1. 'inverted_cdf'
+        2. 'averaged_inverted_cdf'
+        3. 'closest_observation'
+        4. 'interpolated_inverted_cdf'
+        5. 'hazen'
+        6. 'weibull'
+        7. 'linear'  (default)
+        8. 'median_unbiased'
+        9. 'normal_unbiased'
+        The first three methods are discontinuous.  NumPy further defines the
+        following discontinuous variations of the default 'linear' (7.) option:
+        * 'lower'
+        * 'higher',
+        * 'midpoint'
+        * 'nearest'
+    keepdims : bool, optional
+        If this is set to True, the axes which are reduced are left in
+        the result as dimensions with size one. With this option, the
+        result will broadcast correctly against the original array `a`.
+
+    Returns
+    -------
+    percentile : scalar or ndarray
+        If `q` is a single percentile and `axis=None`, then the result
+        is a scalar. If multiple percentiles are given, first axis of
+        the result corresponds to the percentiles. The other axes are
+        the axes that remain after the reduction of `a`. If the input
+        contains integers or floats smaller than ``float64``, the output
+        data-type is ``float64``. Otherwise, the output data-type is the
+        same as that of the input. If `out` is specified, that array is
+        returned instead.
+
+    Raises
+    ------
+    TypeError
+        If the type of the input is complex.
+
+    See Also
+    --------
+    numpy.percentile
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+
+    References
+    ----------
+    .. [1] R. J. Hyndman and Y. Fan,
+       "Sample quantiles in statistical packages,"
+       The American Statistician, 50(4), pp. 361-365, 1996
+    """
+
+    q_arr = np.asarray(q)
+    q01 = q_arr / 100.0
+
+    return quantile(
+        a,
+        q01,
+        axis,
+        out=out,
+        overwrite_input=overwrite_input,
+        method=method,
+        keepdims=keepdims,
+    )
+
+
+@add_boilerplate("x", "weights")
+def histogram(
+    x: ndarray,
+    bins: Union[ndarray, npt.ArrayLike, int] = 10,
+    range: Optional[Union[tuple[int, int], tuple[float, float]]] = None,
+    weights: Optional[ndarray] = None,
+    density: bool = False,
+) -> tuple[ndarray, ndarray]:
+    """
+    Compute the histogram of a dataset.
+
+    Parameters
+    ----------
+    a : array_like
+        Input data. The histogram is computed over the flattened array.
+    bins : int or sequence of scalars, optional
+        If `bins` is an int, it defines the number of equal-width bins in the
+        given range (10, by default). If `bins` is a sequence, it defines a
+        monotonically increasing array of bin edges, including the rightmost
+        edge, allowing for non-uniform bin widths.
+    range : (float, float), optional
+        The lower and upper range of the bins. If not provided, range is simply
+        ``(a.min(), a.max())``. Values outside the range are ignored. The first
+        element of the range must be smaller than the second. This argument is
+        ignored when bin edges are provided explicitly.
+    weights : array_like, optional
+        An array of weights, of the same shape as `a`. Each value in `a` only
+        contributes its associated weight towards the bin count (instead of 1).
+        If `density` is True, the weights are normalized, so that the integral
+        of the density over the range remains 1.
+    density : bool, optional
+        If ``False``, the result will contain the number of samples in each
+        bin. If ``True``, the result is the value of the probability *density*
+        function at the bin, normalized such that the *integral* over the range
+        is 1. Note that the sum of the histogram values will not be equal to 1
+        unless bins of unity width are chosen; it is not a probability *mass*
+        function.
+
+    Returns
+    -------
+    hist : array
+        The values of the histogram. See `density` and `weights` for a
+        description of the possible semantics.
+    bin_edges : array
+        Return the bin edges ``(length(hist)+1)``.
+
+    See Also
+    --------
+    numpy.histogram
+
+    Availability
+    --------
+    Multiple GPUs, Multiple CPUs
+    """
+    result_type: np.dtype[Any] = np.dtype(np.int64)
+
+    if np.ndim(bins) > 1:
+        raise ValueError("`bins` must be 1d, when an array")
+
+    # check isscalar(bins):
+    #
+    if np.ndim(bins) == 0:
+        if not isinstance(bins, int):
+            raise TypeError("`bins` must be array or integer type")
+
+        num_intervals = bins
+
+        if range is not None:
+            assert isinstance(range, tuple) and len(range) == 2
+            if range[0] >= range[1]:
+                raise ValueError(
+                    "`range` must be a pair of increasing values."
+                )
+
+            lower_b = range[0]
+            higher_b = range[1]
+        elif x.size == 0:
+            lower_b = 0.0
+            higher_b = 1.0
+        else:
+            lower_b = float(min(x))
+            higher_b = float(max(x))
+
+        step = (higher_b - lower_b) / num_intervals
+
+        bins_array = asarray(
+            [lower_b + k * step for k in _builtin_range(0, num_intervals)]
+            + [higher_b],
+            dtype=np.dtype(np.float64),
+        )
+
+        bins_orig_type = bins_array.dtype
+    else:
+        bins_as_arr = asarray(bins)
+        bins_orig_type = bins_as_arr.dtype
+
+        bins_array = bins_as_arr.astype(np.dtype(np.float64))
+        num_intervals = bins_array.shape[0] - 1
+
+        if not all((bins_array[1:] - bins_array[:-1]) >= 0):
+            raise ValueError(
+                "`bins` must increase monotonically, when an array"
+            )
+
+    if x.ndim != 1:
+        x = x.flatten()
+
+    if weights is not None:
+        if weights.shape != x.shape:
+            raise ValueError(
+                "`weights` array must be same shape for histogram"
+            )
+
+        result_type = weights.dtype
+        weights_array = weights.astype(np.dtype(np.float64))
+    else:
+        # case weights == None cannot be handled inside _thunk.histogram,
+        # bc/ of hist ndarray inputs(), below;
+        # needs to be handled here:
+        #
+        weights_array = ones(x.shape, dtype=np.dtype(np.float64))
+
+    if x.size == 0:
+        return (
+            zeros((num_intervals,), dtype=result_type),
+            bins_array.astype(bins_orig_type),
+        )
+
+    hist = ndarray(
+        (num_intervals,),
+        dtype=weights_array.dtype,
+        inputs=(x, bins_array, weights_array),
+    )
+    hist._thunk.histogram(
+        x._thunk, bins_array._thunk, weights=weights_array._thunk
+    )
+
+    # handle (density = True):
+    #
+    if density:
+        result_type = np.dtype(np.float64)
+        hist /= sum(hist)
+        hist /= bins_array[1:] - bins_array[:-1]
+
+    return hist.astype(result_type), bins_array.astype(bins_orig_type)

@@ -128,8 +128,6 @@ def test_array_array(lhs_np, rhs_np, lhs_num, rhs_num):
     print(f"NumPy type: {out_np.dtype}, cuNumeric type: {out_num.dtype}")
 
 
-# not all of these currently pass (see not above)
-@pytest.mark.xfail
 @pytest.mark.parametrize(
     "lhs_np, rhs_np, lhs_num, rhs_num", generate_array_scalar_cases(), ids=str
 )
@@ -149,5 +147,4 @@ def test_array_scalar(lhs_np, rhs_np, lhs_num, rhs_num):
 if __name__ == "__main__":
     import sys
 
-    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))

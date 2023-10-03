@@ -13,7 +13,6 @@
 # limitations under the License.
 #
 
-import random
 from itertools import permutations
 
 import numpy as np
@@ -279,7 +278,7 @@ def test_diagonal():
 
     # test diagonal
     for ndim in range(2, LEGATE_MAX_DIM + 1):
-        a_shape = tuple(random.randint(1, 9) for i in range(ndim))
+        a_shape = tuple(np.random.randint(1, 9) for i in range(ndim))
         np_array = mk_seq_array(np, a_shape)
         num_array = mk_seq_array(num, a_shape)
 
@@ -294,7 +293,7 @@ def test_diagonal():
 
     # test for diagonal_helper
     for ndim in range(3, LEGATE_MAX_DIM + 1):
-        a_shape = tuple(random.randint(1, 9) for i in range(ndim))
+        a_shape = tuple(np.random.randint(1, 9) for i in range(ndim))
         np_array = mk_seq_array(np, a_shape)
         num_array = mk_seq_array(num, a_shape)
         for num_axes in range(3, ndim + 1):
@@ -343,6 +342,19 @@ def test_diagonal_empty_array(shape):
 
     b = num.diagonal(a)
     bn = np.diagonal(an)
+    assert np.array_equal(b, bn)
+
+
+@pytest.mark.xfail(reason="cuNumeric does not take single axis")
+def test_diagonal_axis1():
+    shape = (3, 1, 2)
+    a = mk_seq_array(num, shape)
+    an = mk_seq_array(np, shape)
+
+    # cuNumeric hits AssertionError in _diag_helper: assert axes is not None
+    b = num.diagonal(a, axis1=2)
+    # NumPy passes
+    bn = np.diagonal(an, axis1=2)
     assert np.array_equal(b, bn)
 
 
@@ -411,6 +423,34 @@ class TestDiagonalErrors:
         # In cuNumeric, it raises AssertionError
         with pytest.raises(TypeError):
             num.diagonal(self.a, 0, None, 0)
+
+    @pytest.mark.diff
+    def test_scalar_axes(self):
+        # NumPy does not have axes arg
+        with pytest.raises(ValueError):
+            num.diagonal(self.a, axes=(0,))
+
+    @pytest.mark.diff
+    def test_duplicate_axes(self):
+        # NumPy does not have axes arg
+        expected_exc = ValueError
+        with pytest.raises(expected_exc):
+            num.diagonal(self.a, axis1=1, axes=(0, 1))
+        with pytest.raises(expected_exc):
+            num.diagonal(self.a, axis1=1, axis2=0, axes=(0, 1))
+
+    @pytest.mark.diff
+    def test_extra_axes(self):
+        # NumPy does not have axes arg
+        axes = num.arange(self.a.ndim + 1, dtype=int)
+        with pytest.raises(ValueError):
+            num.diagonal(self.a, axes=axes)
+
+    @pytest.mark.diff
+    def test_n_axes_offset(self):
+        # NumPy does not have axes arg
+        with pytest.raises(ValueError):
+            num.diagonal(self.a, offset=1, axes=(2, 1, 0))
 
     @pytest.mark.parametrize(
         "k",
@@ -517,5 +557,4 @@ class TestDiagErrors:
 if __name__ == "__main__":
     import sys
 
-    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))

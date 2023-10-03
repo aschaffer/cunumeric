@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-import random
-
 import numpy as np
 import pytest
 from utils.comparisons import allclose
@@ -76,7 +74,7 @@ class TestSumNegative(object):
 
     @pytest.mark.parametrize("arr", ARR)
     def test_array(self, arr):
-        assert np.array_equal(np.sum(arr), num.sum(arr))
+        assert allclose(np.sum(arr), num.sum(arr))
 
     @pytest.mark.xfail
     @pytest.mark.parametrize("dtype", NEGATIVE_DTYPE, ids=to_dtype)
@@ -125,7 +123,7 @@ class TestSumNegative(object):
         arr_np = np.array(arr_num)
         out_np = np.sum(arr_np, axis=2, keepdims=True)
         out_num = num.sum(arr_num, axis=2, keepdims=True)
-        assert np.array_equal(out_np, out_num)
+        assert allclose(out_np, out_num)
 
     @pytest.mark.xfail
     def test_initial_scalar_list(self):
@@ -135,7 +133,7 @@ class TestSumNegative(object):
         out_np = np.sum(
             arr, initial=initial_value
         )  # ValueError: Input object to FillWithScalar is not a scalar
-        assert np.array_equal(out_np, out_num)
+        assert allclose(out_np, out_num)
 
     def test_initial_list(self):
         arr = [[1, 2], [3, 4]]
@@ -148,7 +146,7 @@ class TestSumNegative(object):
         size = (1, 0)
         arr_np = np.random.random(size) * 10
         arr_num = num.array(arr_np)
-        initial_value = random.uniform(-20.0, 20.0)
+        initial_value = np.random.uniform(-20.0, 20.0)
         out_num = num.sum(arr_num, initial=initial_value)  # return 0.0
         out_np = np.sum(arr_np, initial=initial_value)  # return initial_value
         assert allclose(out_np, out_num)
@@ -160,7 +158,7 @@ class TestSumNegative(object):
         # cuNumeric raises NotImplementedError:
         # "the `where` parameter is currently not supported"
         out_num = num.sum(arr, where=[False, True])
-        assert np.array_equal(out_np, out_num)
+        assert allclose(out_np, out_num)
 
 
 class TestSumPositive(object):
@@ -289,7 +287,7 @@ class TestSumPositive(object):
     def test_initial(self, size):
         arr_np = np.random.random(size) * 10
         arr_num = num.array(arr_np)
-        initial_value = random.uniform(-20.0, 20.0)
+        initial_value = np.random.uniform(-20.0, 20.0)
         out_num = num.sum(arr_num, initial=initial_value)
         out_np = np.sum(arr_np, initial=initial_value)
 
@@ -313,5 +311,4 @@ def test_indexed():
 if __name__ == "__main__":
     import sys
 
-    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))

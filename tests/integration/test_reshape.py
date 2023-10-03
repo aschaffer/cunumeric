@@ -183,6 +183,12 @@ def test_reshape_empty_array(shape):
     )
 
 
+def test_reshape_same_shape():
+    shape = (1, 2, 3)
+    arr = np.random.rand(*shape)
+    assert np.array_equal(np.reshape(arr, shape), num.reshape(arr, shape))
+
+
 class TestReshapeErrors:
     def setup_method(self):
         self.a = num.arange(24)
@@ -227,6 +233,13 @@ class TestReshapeErrors:
         with pytest.raises(ValueError):
             num.reshape(self.a, self.shape, order="Z")
 
+    def test_reshape_no_args(self):
+        expected_exc = TypeError
+        with pytest.raises(expected_exc):
+            np.array(()).reshape()
+        with pytest.raises(expected_exc):
+            num.array(()).reshape()
+
 
 class TestRavelErrors:
     def setup_method(self):
@@ -240,5 +253,4 @@ class TestRavelErrors:
 if __name__ == "__main__":
     import sys
 
-    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))

@@ -94,3 +94,13 @@ def broadcasts_to_along_axis(tgt_shape, axis, values):
         for v in values:
             shape = s[:axis] + (v,) + s[axis:]
             yield shape
+
+
+def generate_item(ndim):
+    """
+    Generates item location for ndarray.item and ndarray.itemset
+    """
+    max_index = pow(4, ndim) - 1
+    random_index = np.random.randint(-1, max_index)
+    random_tuple = tuple(np.random.randint(0, 3) for i in range(0, ndim))
+    return [random_index, max_index, random_tuple]

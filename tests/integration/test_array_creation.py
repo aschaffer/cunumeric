@@ -191,11 +191,12 @@ ARANGE_ARGS = [
     (0,),
     (10,),
     (3.5,),
-    pytest.param((-10), marks=pytest.mark.xfail),
+    (3.0, 8, None),
+    (-10,),
     (2, 10),
-    pytest.param((2, -10), marks=pytest.mark.xfail),
+    (2, -10),
     (-2.5, 10.0),
-    pytest.param((1, -10, -2.5), marks=pytest.mark.xfail),
+    (1, -10, -2.5),
     (1.0, -10.0, -2.5),
     (-10, 10, 10),
     (-10, 10, -100),
@@ -275,5 +276,4 @@ def test_zero_with_0d_ndarray_shape():
 if __name__ == "__main__":
     import sys
 
-    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))

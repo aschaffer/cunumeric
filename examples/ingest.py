@@ -19,9 +19,8 @@ import argparse
 import os
 from glob import glob
 
-import pyarrow as pa
 import tifffile as tfl
-from legate.core import CustomSplit, Rect, TiledSplit, ingest
+from legate.core import CustomSplit, Rect, TiledSplit, ingest, uint16
 
 import cunumeric as np
 
@@ -36,10 +35,10 @@ parser.add_argument(
     nargs="+",
     default=[3, 2, 2, 1],
 )
-parser.add_argument("-p", "--custom-partitioning", action="store_true")
-parser.add_argument("-s", "--custom-sharding", action="store_true")
+parser.add_argument("--custom-partitioning", action="store_true")
+parser.add_argument("--custom-sharding", action="store_true")
 args = parser.parse_args()
-dtype = pa.uint16()
+dtype = uint16
 tile_shape = (1, 301, 704, 360)
 colors = tuple(args.colors)
 shape = tuple(ci * di for (ci, di) in zip(colors, tile_shape))

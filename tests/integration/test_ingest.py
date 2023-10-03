@@ -13,12 +13,12 @@
 # limitations under the License.
 #
 import numpy as np
-import pyarrow as pa
 import pytest
 from legate.core import (
     CustomSplit,
     Rect,
     TiledSplit,
+    float64,
     get_legion_context,
     get_legion_runtime,
     ingest,
@@ -73,7 +73,7 @@ def _ingest(custom_partitioning, custom_sharding):
         else TiledSplit(tile_shape)
     )
     tab = ingest(
-        pa.float64(),
+        float64,
         shape,
         colors,
         data_split,
@@ -98,5 +98,4 @@ def test(custom_partitioning, custom_sharding):
 if __name__ == "__main__":
     import sys
 
-    np.random.seed(12345)
     sys.exit(pytest.main(sys.argv))
