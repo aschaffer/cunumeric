@@ -38,7 +38,7 @@ import numpy as np
 from legate.core import Annotation, Future, ReductionOp, Store
 from legate.core.store import RegionField
 from legate.core.utils import OrderedSet
-from numpy.core.numeric import (  # type: ignore [attr-defined]
+from numpy.lib.array_utils import (  # type: ignore [attr-defined]
     normalize_axis_tuple,
 )
 from typing_extensions import ParamSpec

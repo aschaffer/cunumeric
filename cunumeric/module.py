@@ -34,10 +34,8 @@ from typing import (
 
 import numpy as np
 import opt_einsum as oe  # type: ignore [import]
-from numpy.core.multiarray import (  # type: ignore [attr-defined]
+from numpy.lib.array_utils import (  # type: ignore [attr-defined]
     normalize_axis_index,
-)
-from numpy.core.numeric import (  # type: ignore [attr-defined]
     normalize_axis_tuple,
 )
 

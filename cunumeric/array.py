@@ -32,10 +32,8 @@ from typing import (
 import numpy as np
 from legate.core import Array, Field
 from legate.core.utils import OrderedSet
-from numpy.core.multiarray import (  # type: ignore [attr-defined]
+from numpy.lib.array_utils import (  # type: ignore [attr-defined]
     normalize_axis_index,
-)
-from numpy.core.numeric import (  # type: ignore [attr-defined]
     normalize_axis_tuple,
 )
 from typing_extensions import ParamSpec
