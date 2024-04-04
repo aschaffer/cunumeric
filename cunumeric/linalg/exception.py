@@ -13,5 +13,8 @@
 # limitations under the License.
 #
 
-
-from numpy.linalg import LinAlgError  # noqa: F401
+import numpy as np
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.linalg import LinAlgError  # noqa: F401
+else:
+    from numpy.linalg.linalg import LinAlgError  # noqa: F401

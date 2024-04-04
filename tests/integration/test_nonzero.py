@@ -16,6 +16,11 @@
 import numpy as np
 import pytest
 
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.exceptions import AxisError
+else:
+    from numpy import AxisError
+
 import cunumeric as num
 
 # cunumeric.count_nonzero(a: ndarray,
@@ -82,7 +87,7 @@ def test_basic(size):
 
 def test_axis_out_bound():
     arr = [-1, 0, 1, 2, 10]
-    with pytest.raises(np.AxisError):
+    with pytest.raises(AxisError):
         num.count_nonzero(arr, axis=2)
 
 

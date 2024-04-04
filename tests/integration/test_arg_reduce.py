@@ -17,6 +17,11 @@ import numpy as np
 import pytest
 from legate.core import LEGATE_MAX_DIM
 
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.exceptions import AxisError
+else:
+    from numpy import AxisError
+
 import cunumeric as num
 
 ARG_FUNCS = ("argmax", "argmin")
@@ -57,7 +62,7 @@ class TestArgReduceErrors:
         func = getattr(num, func_name)
 
         msg = r"out of bounds"
-        with pytest.raises(np.AxisError, match=msg):
+        with pytest.raises(AxisError, match=msg):
             func(in_num, axis=ndim + 1)
 
     @pytest.mark.parametrize("func_name", ARG_FUNCS)
@@ -68,7 +73,7 @@ class TestArgReduceErrors:
         func = getattr(num, func_name)
 
         msg = r"out of bounds"
-        with pytest.raises(np.AxisError, match=msg):
+        with pytest.raises(AxisError, match=msg):
             func(in_num, axis=-(ndim + 1))
 
     @pytest.mark.parametrize("func_name", ARG_FUNCS)

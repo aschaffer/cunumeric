@@ -17,9 +17,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Union, cast
 
 from legate.core import types as ty
-from numpy.lib.array_utils import (  # type: ignore [attr-defined]
-    normalize_axis_index,
-)
+import numpy as np
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.lib.array_utils import (  # type: ignore [attr-defined]
+        normalize_axis_index,
+    )
+else:
+    from numpy.core.multiarray import (  # type: ignore [attr-defined]
+        normalize_axis_index,
+    )
 
 from .config import CuNumericOpCode
 

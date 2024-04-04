@@ -16,6 +16,11 @@ import numpy as np
 import pytest
 from utils.comparisons import allclose
 
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.exceptions import AxisError
+else:
+    from numpy import AxisError
+
 import cunumeric as num
 
 # numpy.sum(a, axis=None, dtype=None, out=None, keepdims=<no value>,
@@ -92,7 +97,7 @@ class TestSumNegative(object):
     def test_axis_out_bound(self):
         arr = [-1, 0, 1, 2, 10]
         msg = r"bounds"
-        with pytest.raises(np.AxisError, match=msg):
+        with pytest.raises(AxisError, match=msg):
             num.sum(arr, axis=2)
 
     @pytest.mark.xfail

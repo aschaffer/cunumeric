@@ -20,6 +20,11 @@ import pytest
 from legate.core import LEGATE_MAX_DIM
 from utils.generators import mk_seq_array
 
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.exceptions import AxisError
+else:
+    from numpy import AxisError
+
 import cunumeric as num
 from cunumeric.eager import diagonal_reference
 
@@ -534,7 +539,7 @@ class TestDiagonalErrors:
         # In cuNumeric, it raises ValueError:
         # axes must be the same size as ndim for transpose
         axis1, axis2 = axes
-        with pytest.raises(np.AxisError):
+        with pytest.raises(AxisError):
             num.diagonal(self.a, 0, axis1, axis2)
 
     @pytest.mark.xfail

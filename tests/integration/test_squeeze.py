@@ -16,6 +16,11 @@
 import numpy as np
 import pytest
 
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.exceptions import AxisError
+else:
+    from numpy import AxisError
+
 import cunumeric as num
 
 DIM = 5
@@ -74,7 +79,7 @@ def test_num_axis_out_bound():
     size = (1, 2, 1)
     a = num.random.randint(low=-10, high=10, size=size)
     msg = r"bounds"
-    with pytest.raises(np.AxisError, match=msg):
+    with pytest.raises(AxisError, match=msg):
         num.squeeze(a, axis=3)
 
 
@@ -82,7 +87,7 @@ def test_array_axis_out_bound():
     size = (1, 2, 1)
     a = num.random.randint(-10, 10, size=size)
     msg = r"bounds"
-    with pytest.raises(np.AxisError, match=msg):
+    with pytest.raises(AxisError, match=msg):
         a.squeeze(axis=3)
 
 

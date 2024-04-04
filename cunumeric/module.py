@@ -34,10 +34,20 @@ from typing import (
 
 import numpy as np
 import opt_einsum as oe  # type: ignore [import]
-from numpy.lib.array_utils import (  # type: ignore [attr-defined]
-    normalize_axis_index,
-    normalize_axis_tuple,
-)
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.exceptions import AxisError
+    from numpy.lib.array_utils import (  # type: ignore [attr-defined]
+        normalize_axis_index,
+        normalize_axis_tuple,
+    )
+else:
+    from numpy import AxisError
+    from numpy.core.multiarray import (  # type: ignore [attr-defined]
+        normalize_axis_index,
+    )
+    from numpy.core.numeric import (  # type: ignore [attr-defined]
+        normalize_axis_tuple,
+    )
 
 from cunumeric.coverage import is_implemented
 
@@ -2712,7 +2722,7 @@ def repeat(a: ndarray, repeats: Any, axis: Optional[int] = None) -> ndarray:
     # when array is a scalar
     if np.ndim(a) == 0:
         if axis is not None and axis != 0 and axis != -1:
-            raise np.AxisError(
+            raise AxisError(
                 f"axis {axis} is out of bounds for array of dimension 0"
             )
         if np.ndim(repeats) == 0:

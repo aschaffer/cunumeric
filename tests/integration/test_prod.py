@@ -16,6 +16,11 @@ import numpy as np
 import pytest
 from utils.comparisons import allclose
 
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.exceptions import AxisError
+else:
+    from numpy import AxisError
+
 import cunumeric as num
 
 # numpy.prod(a, axis=None, dtype=None, out=None, keepdims=<no value>,
@@ -94,7 +99,7 @@ class TestProdNegative(object):
         assert allclose(np.prod(arr), num.prod(arr))
 
     def test_axis_out_bound(self):
-        expected_exc = np.AxisError
+        expected_exc = AxisError
         arr = [-1, 0, 1, 2, 10]
         with pytest.raises(expected_exc):
             np.prod(arr, axis=2)

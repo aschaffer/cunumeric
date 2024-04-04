@@ -17,10 +17,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence, Union
 
 import numpy as np
-from numpy.lib.array_utils import (  # type: ignore [attr-defined]
-    normalize_axis_index,
-    normalize_axis_tuple,
-)
+if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
+    from numpy.lib.array_utils import (  # type: ignore [attr-defined]
+        normalize_axis_index,
+        normalize_axis_tuple,
+    )
+else:
+    from numpy.core.multiarray import (  # type: ignore [attr-defined]
+        normalize_axis_index,
+    )
+    from numpy.core.numeric import (  # type: ignore [attr-defined]
+        normalize_axis_tuple,
+    )
 
 from cunumeric._ufunc.math import add, sqrt as _sqrt
 from cunumeric.array import add_boilerplate, convert_to_cunumeric_ndarray
