@@ -106,9 +106,6 @@ def check_2d_c2c(N, dtype=np.float64):
         assert allclose(out, out_num)
 
     # Odd types
-    #
-    # TypeError failure w/ numpy 2.0:
-    #
     out = np.fft.rfft2(Z)
     out_num = num.fft.rfft2(Z_num)
     assert allclose(out, out_num)
